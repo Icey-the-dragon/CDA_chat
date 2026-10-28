@@ -21,37 +21,52 @@ Vagrant.configure("2") do |config|
       echo "Installing K3s Master..."
       curl -sfL https://get.k3s.io | K3S_TOKEN="#{K3S_TOKEN}" sh -s - server --cluster-init
       
-      # Copy kubeconfig to /vagrant so your host/master can use it if synced
+      # Copy kubeconfig to /vagrant so your host/master can use it if synced (mostly if i want to attach from host something)
       sudo cp /etc/rancher/k3s/k3s.yaml /vagrant/kubeconfig.yaml 2>/dev/null || true
       sudo chmod 644 /vagrant/kubeconfig.yaml 2>/dev/null || true
+
+      if [ -d "/vagrant/manifests" ]; then
+        sudo k3s kubectl apply -f /vagrant/kubernetes/
+      else
+        echo "Manifests folder not found!"
+      fi
     SHELL
   end
 
   # Worker Nodes
   nodes = {
-    "k3s-worker-grafana" => "192.168.56.11",
-    "k3s-worker-db"      => "192.168.56.12",
-    "k3s-worker-chat"    => "192.168.56.13",
-    "k3s-worker-nginx"   => "192.168.56.14"
+    "k3s-worker-grafana" => { ip: "192.168.56.11", role: "grafana" },
+    "k3s-worker-db"      => { ip: "192.168.56.12", role: "db" },
+    "k3s-worker-chat"    => { ip: "192.168.56.13", role: "chat" },
+    "k3s-worker-nginx"   => { ip: "192.168.56.14", role: "nginx", forward_port: 8080, node_port: 30080 } # webUI /grafana proxied to graphana WebUI, etc
   }
 
-  nodes.each do |name, ip|
+  nodes.each do |name, info|
     config.vm.define name do |node|
       node.vm.hostname = name
-      node.vm.network "private_network", ip: ip
+      node.vm.network "private_network", ip: info[:ip]
       node.vm.provider "virtualbox" do |vb|
         vb.memory = "512" # 1GB minimum per worker for databases/apps
         vb.cpus = 1
       end
+
+      #port forwards
+      if info[:forward_port]
+        node.vm.network "forwarded_port", guest: info[:node_port], host: info[:forward_port]
+      end
+
       node.vm.provision "shell", inline: <<-SHELL
-        echo "Waiting for K3s Master API to become available..."
+        echo "Waiting for K3s Master API..."
         until curl -k -s https://192.168.56.10:6443/cacerts > /dev/null; do
-          sleep 3
+        sleep 3
         done
 
-        echo "Installing K3s Worker and joining master..."
-        curl -sfL https://get.k3s.io | K3S_URL="https://192.168.56.10:6443" K3S_TOKEN="#{K3S_TOKEN}" sh -s - agent --node-ip #{ip}
-      SHELL
+        echo "Joining cluster and applying role=#{info[:role]}..."
+        curl -sfL https://get.k3s.io | K3S_URL="https://192.168.56.10:6443" K3S_TOKEN="#{K3S_TOKEN}" sh -s - agent \
+        --node-ip #{info[:ip]} \
+        --node-name #{name} \
+        --node-label role=#{info[:role]}
+        SHELL
     end
   end
 end
