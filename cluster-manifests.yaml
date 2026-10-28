@@ -1,0 +1,93 @@
+---
+# 1. MariaDB Deployment on DB Worker
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mariadb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mariadb
+  template:
+    metadata:
+      labels:
+        app: mariadb
+    spec:
+      nodeSelector:
+        role: db
+      containers:
+      - name: mariadb
+        image: mariadb:latest
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: "secretpassword"
+---
+# 2. Chat Server Deployment on Chat Worker
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chat-server
+  template:
+    metadata:
+      labels:
+        app: chat-server
+    spec:
+      nodeSelector:
+        role: chat
+      containers:
+      - name: chat
+        image: your-chat-server-image:latest
+        ports:
+        - containerPort: 8080 # WebSocket/REST port
+---
+# 3. Grafana Deployment on Grafana Worker
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      nodeSelector:
+        role: grafana
+      containers:
+      - name: grafana
+        image: grafana/grafana:latest
+        ports:
+        - containerPort: 3000
+---
+# 4. Nginx Deployment on Nginx Worker
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-router
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-router
+  template:
+    metadata:
+      labels:
+        app: nginx-router
+    spec:
+      nodeSelector:
+        role: nginx
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
