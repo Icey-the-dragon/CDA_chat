@@ -1,6 +1,12 @@
 import { getPool } from './db.js';
 
-const MESSAGE_COLUMNS = 'm.id, r.name AS room, m.username, m.body, m.created_at AS createdAt';
+const MESSAGE_COLUMNS = `m.id,
+  r.name AS room,
+  m.username,
+  COALESCE(p.avatar, '') AS avatar,
+  COALESCE(p.color, '') AS avatarColor,
+  m.body,
+  m.created_at AS createdAt`;
 
 export async function ensureRoom(name) {
   const [result] = await getPool().query(
@@ -44,6 +50,7 @@ export async function listMessages(room, { limit, before = null }) {
   let sql = `SELECT ${MESSAGE_COLUMNS}
                FROM messages m
                JOIN rooms r ON r.id = m.room_id
+               LEFT JOIN profiles p ON p.username = m.username
               WHERE r.name = ?`;
 
   if (before) {
@@ -69,9 +76,30 @@ export async function createMessage({ room, username, body }) {
     `SELECT ${MESSAGE_COLUMNS}
        FROM messages m
        JOIN rooms r ON r.id = m.room_id
+       LEFT JOIN profiles p ON p.username = m.username
       WHERE m.id = ?`,
     [result.insertId],
   );
 
   return rows[0];
+}
+
+export async function getProfile(username) {
+  const [rows] = await getPool().query(
+    'SELECT username, avatar, color FROM profiles WHERE username = ?',
+    [username],
+  );
+
+  return rows[0] ?? null;
+}
+
+export async function saveProfile({ username, avatar, color }) {
+  await getPool().query(
+    `INSERT INTO profiles (username, avatar, color)
+     VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE avatar = VALUES(avatar), color = VALUES(color)`,
+    [username, avatar, color],
+  );
+
+  return { username, avatar, color };
 }

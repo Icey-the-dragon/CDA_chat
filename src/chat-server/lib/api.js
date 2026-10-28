@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { config } from './config.js';
 import { dbHealth, pingDatabase } from './db.js';
 import * as store from './store.js';
-import { HttpError, normalizeRoom, parseMessageInput } from './validation.js';
+import { HttpError, normalizeRoom, normalizeUsername, parseMessageInput, parseProfileInput } from './validation.js';
 
 function wrap(handler) {
   return (request, response, next) => {
@@ -88,6 +88,17 @@ export function createApiRouter({ hub }) {
     const message = await store.createMessage(parseMessageInput(request.body));
     hub.broadcastMessage(message);
     response.status(201).json({ message });
+  }));
+
+  router.get('/profile', wrap(async (request, response) => {
+    const username = normalizeUsername(request.query.username);
+    response.json({ profile: await store.getProfile(username) });
+  }));
+
+  router.put('/profile', wrap(async (request, response) => {
+    const profile = await store.saveProfile(parseProfileInput(request.body));
+    hub.broadcastProfile(profile);
+    response.json({ profile });
   }));
 
   return router;

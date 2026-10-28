@@ -126,6 +126,42 @@ textarea {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+.identity-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: -10px;
+}
+
+.identity-hint {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.avatar-button {
+  width: 38px;
+  height: 38px;
+  margin: 0;
+  border: 2px solid var(--border);
+  cursor: pointer;
+  font-size: 14px;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+}
+
+.avatar-button:hover,
+.avatar-button:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.avatar.emoji {
+  font-size: 17px;
+  font-weight: 400;
+  text-transform: none;
+}
+
 .rooms-panel {
   display: flex;
   flex: 1;
@@ -370,6 +406,10 @@ textarea {
   font-size: 13px;
 }
 
+.message .avatar.emoji {
+  font-size: 20px;
+}
+
 .bubble {
   min-width: 0;
   padding: 9px 13px 10px;
@@ -489,6 +529,187 @@ textarea {
   font-size: 13px;
 }
 
+/* Avatar picker */
+
+.avatar-dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  color: var(--text);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+}
+
+.avatar-dialog::backdrop {
+  background: rgba(3, 5, 9, 0.74);
+  backdrop-filter: blur(4px);
+}
+
+.avatar-dialog[open] {
+  animation: pop 0.16s ease-out;
+}
+
+@keyframes pop {
+  from { opacity: 0; transform: scale(0.97) translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.avatar-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px 14px;
+}
+
+.avatar-dialog-head h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.avatar-dialog-head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.icon-button {
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  color: var(--text);
+}
+
+.avatar-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 22px 18px;
+}
+
+.avatar-preview {
+  width: 56px;
+  height: 56px;
+  margin: 0;
+  border: 0;
+  font-size: 20px;
+}
+
+.avatar-preview.emoji {
+  font-size: 28px;
+}
+
+.avatar-preview-name {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.avatar-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 6px;
+  padding: 0 22px;
+}
+
+.avatar-grid button {
+  aspect-ratio: 1;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--panel-3);
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.avatar-grid button:hover {
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+
+.avatar-grid button.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.color-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 16px 22px 0;
+}
+
+.color-grid button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 2px rgba(9, 12, 18, 0.45);
+}
+
+.color-grid button.selected {
+  border-color: #fff;
+  transform: scale(1.08);
+}
+
+.avatar-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 22px 22px;
+}
+
+.avatar-dialog-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.button {
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-3);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.button:hover {
+  filter: brightness(1.1);
+}
+
+.button.ghost {
+  background: transparent;
+  color: var(--muted);
+}
+
+.button.ghost:hover {
+  color: var(--text);
+}
+
+.button.primary {
+  border: 0;
+  background: linear-gradient(145deg, var(--accent), #5b3ce6);
+  color: #fff;
+}
+
+.button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 /* Scrollbars */
 
 ::-webkit-scrollbar {
@@ -534,9 +755,29 @@ textarea {
     right: 16px;
   }
 
+  .identity-row {
+    position: absolute;
+    top: 52px;
+    right: 16px;
+    margin: 0;
+  }
+
+  .identity-hint {
+    display: none;
+  }
+
+  .avatar-button {
+    width: 32px;
+    height: 32px;
+  }
+
   .identity input {
     width: 150px;
     padding: 7px 9px;
+  }
+
+  .avatar-grid {
+    grid-template-columns: repeat(6, 1fr);
   }
 
   .rooms-panel {

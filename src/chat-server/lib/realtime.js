@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { WebSocket, WebSocketServer } from 'ws';
 import { config } from './config.js';
 import { createMessage } from './store.js';
-import { HttpError, normalizeBody, normalizeRoom, normalizeUsername } from './validation.js';
+import { HttpError, normalizeAvatar, normalizeAvatarColor, normalizeBody, normalizeRoom, normalizeUsername } from './validation.js';
 
 const ALLOWED_PATHS = new Set(['/', '/ws', '/ws/']);
 const MIN_MESSAGE_INTERVAL_MS = 400;
@@ -76,24 +76,42 @@ export function createRealtimeHub(server) {
     }
   }
 
+  function broadcastAll(payload) {
+    const data = JSON.stringify(payload);
+
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(data);
+      }
+    }
+  }
+
   function presenceFor(room) {
     const users = new Set();
+    const profiles = {};
 
     for (const client of clients) {
       if (client.meta.room === room && client.meta.username) {
         users.add(client.meta.username);
+        profiles[client.meta.username] = {
+          avatar: client.meta.avatar || '',
+          color: client.meta.color || '',
+        };
       }
     }
 
-    return [...users].sort((a, b) => a.localeCompare(b));
+    return {
+      users: [...users].sort((a, b) => a.localeCompare(b)),
+      profiles,
+    };
   }
 
   function broadcastPresence(room) {
     if (!room) return;
-    broadcast(room, { type: 'presence', room, users: presenceFor(room) });
+    broadcast(room, { type: 'presence', room, ...presenceFor(room) });
   }
 
-  function joinRoom(socket, { room, username }) {
+  function joinRoom(socket, { room, username, avatar, color }) {
     const normalizedRoom = normalizeRoom(room);
     const normalizedUsername = normalizeUsername(username);
     const previousRoom = socket.meta.room;
@@ -101,6 +119,8 @@ export function createRealtimeHub(server) {
 
     socket.meta.room = normalizedRoom;
     socket.meta.username = normalizedUsername;
+    if (avatar !== undefined) socket.meta.avatar = avatar;
+    if (color !== undefined) socket.meta.color = color;
 
     if (previousRoom && (previousRoom !== normalizedRoom || previousUsername !== normalizedUsername)) {
       broadcastPresence(previousRoom);
@@ -119,6 +139,8 @@ export function createRealtimeHub(server) {
       id: randomUUID(),
       room: null,
       username: null,
+      avatar: '',
+      color: '',
       alive: true,
       lastMessageAt: 0,
       lastTypingAt: 0,
@@ -157,6 +179,8 @@ export function createRealtimeHub(server) {
             joinRoom(socket, {
               room: payload.room ?? socket.meta.room ?? 'general',
               username: payload.username ?? socket.meta.username,
+              avatar: payload.avatar === undefined ? undefined : normalizeAvatar(payload.avatar),
+              color: payload.color === undefined ? undefined : normalizeAvatarColor(payload.color),
             });
             break;
           }
@@ -257,6 +281,10 @@ export function createRealtimeHub(server) {
   return {
     broadcastMessage(message) {
       broadcast(message.room, { type: 'message', message });
+    },
+
+    broadcastProfile(profile) {
+      broadcastAll({ type: 'profile', profile });
     },
 
     stats() {

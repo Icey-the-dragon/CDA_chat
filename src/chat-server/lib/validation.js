@@ -2,6 +2,7 @@ import { config } from './config.js';
 
 const ROOM_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
 const USERNAME_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u;
+const COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
 
 export class HttpError extends Error {
   constructor(status, message, code = 'bad_request') {
@@ -65,6 +66,40 @@ export function normalizeBody(value) {
   }
 
   return body;
+}
+
+export function normalizeAvatar(value) {
+  if (value === undefined || value === null || value === '') return '';
+
+  if (typeof value !== 'string') {
+    throw new HttpError(400, 'Avatar must be a short emoji or symbol.');
+  }
+
+  const avatar = value.trim();
+
+  if (Array.from(avatar).length > 8 || /\s/u.test(avatar)) {
+    throw new HttpError(400, 'Avatar must be at most 8 characters without spaces.');
+  }
+
+  return avatar;
+}
+
+export function normalizeAvatarColor(value) {
+  if (value === undefined || value === null || value === '') return '';
+
+  if (typeof value !== 'string' || !COLOR_PATTERN.test(value.trim())) {
+    throw new HttpError(400, 'Avatar color must be a hex color such as #7c5cff.');
+  }
+
+  return value.trim().toLowerCase();
+}
+
+export function parseProfileInput(input = {}) {
+  return {
+    username: normalizeUsername(input.username),
+    avatar: normalizeAvatar(input.avatar),
+    color: normalizeAvatarColor(input.color),
+  };
 }
 
 export function parseMessageInput(input = {}) {

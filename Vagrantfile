@@ -64,12 +64,12 @@ Vagrant.configure("2") do |config|
         # the locally built chat image exists before the pod is scheduled.
         # The tarball is built on the host and reaches this VM through /vagrant.
         if [ "#{info[:role]}" = "chat" ]; then
-          if [ -f /vagrant/chat-server.tar ]; then
-            echo "Preloading chat-server image from /vagrant/chat-server.tar..."
+          if [ -f /vagrant/images/chat-server.tar ]; then
+            echo "Preloading chat-server image from /vagrant/images/chat-server.tar..."
             sudo mkdir -p /var/lib/rancher/k3s/agent/images
-            sudo cp /vagrant/chat-server.tar /var/lib/rancher/k3s/agent/images/chat-server.tar
+            sudo cp /vagrant/images/chat-server.tar /var/lib/rancher/k3s/agent/images/chat-server.tar
           else
-            echo "WARNING: /vagrant/chat-server.tar not found; the chat pod will stay in ErrImagePull."
+            echo "WARNING: /vagrant/images/chat-server.tar not found; the chat pod will stay in ErrImagePull."
           fi
         fi
 
@@ -88,9 +88,9 @@ Vagrant.configure("2") do |config|
 
         # On a re-provision the agent is already running, so import a rebuilt
         # tarball immediately instead of waiting for the next k3s restart.
-        if [ "#{info[:role]}" = "chat" ] && [ -f /vagrant/chat-server.tar ] && systemctl is-active --quiet k3s-agent; then
+        if [ "#{info[:role]}" = "chat" ] && [ -f /vagrant/images/chat-server.tar ] && systemctl is-active --quiet k3s-agent; then
           for attempt in 1 2 3 4 5; do
-            sudo k3s ctr images import /vagrant/chat-server.tar && break
+            sudo k3s ctr images import /vagrant/images/chat-server.tar && break
             sleep 3
           done
         fi

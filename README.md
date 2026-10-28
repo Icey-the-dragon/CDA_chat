@@ -37,6 +37,7 @@ src/chat-server/
   public/                  web UI (index.html, styles.css, app.js)
   Dockerfile               node:22-alpine production image
 Vagrantfile                cluster definition
+images/chat-server.tar     locally built image, preloaded by the chat worker (gitignored)
 ```
 
 The database schema lives in the `mariadb-init` ConfigMap inside
@@ -66,7 +67,7 @@ The chat pod is pinned to the `role=chat` worker, so only `k3s-worker-chat`
 needs the image. Each k3s node has its own containerd and there is no registry,
 so the master cannot serve its images to the worker. Instead:
 
-1. the host builds `chat-server.tar` in the repository root,
+1. the host builds `images/chat-server.tar` (relative to the repository root),
 2. Vagrant's rsync synced folder copies it to every VM (`/vagrant`),
 3. the chat worker copies it to `/var/lib/rancher/k3s/agent/images/` before
    k3s starts, and k3s imports it automatically.
@@ -75,8 +76,9 @@ Build and save **before** the first `vagrant up`:
 
 ```bash
 # From the repository root, with Docker running on the host and matching amd64
+mkdir -p images
 docker build -t chat-server:latest src/chat-server
-docker save -o chat-server.tar chat-server:latest
+docker save -o images/chat-server.tar chat-server:latest
 vagrant up
 ```
 
@@ -91,9 +93,9 @@ Deployment:
 
 ```bash
 docker build -t chat-server:latest src/chat-server
-docker save -o chat-server.tar chat-server:latest
+docker save -o images/chat-server.tar chat-server:latest
 vagrant rsync k3s-worker-chat
-vagrant ssh k3s-worker-chat -c "sudo k3s ctr images import /vagrant/chat-server.tar"
+vagrant ssh k3s-worker-chat -c "sudo k3s ctr images import /vagrant/images/chat-server.tar"
 vagrant ssh k3s-master -c "sudo k3s kubectl rollout restart deployment/chat-server"
 ```
 
@@ -133,6 +135,14 @@ vagrant ssh k3s-worker-chat -c "sudo k3s crictl images | grep chat-server"
 Open the chat in two browser windows to see WebSocket messages and presence
 updates in real time.
 
+### Icons and profile colors
+
+Click the avatar next to **Your nickname** to open the icon picker. Pick an
+emoji and a background color, then **Save**. The choice is stored per nickname
+in MariaDB and is broadcast over WebSocket, so every client shows the same icon
+in the message list and the presence bar. **Use initials** clears the custom
+icon and falls back to the generated initials and hash color.
+
 ## Local development (without Kubernetes)
 
 You only need Node.js 20+ and a MariaDB instance.
@@ -157,10 +167,11 @@ PORT=3000 npm start
 $env:PORT=3000; npm start
 ```
 
-Open <http://localhost:3000>. The server creates the `rooms` and `messages`
-tables on startup and retries every few seconds until MariaDB is reachable.
-The HTTP server starts immediately, so the UI is available even while the
-database is still booting (`/api/health` returns `503` until it is ready).
+Open <http://localhost:3000>. The server creates the `rooms`, `messages` and
+`profiles` tables on startup and retries every few seconds until MariaDB is
+reachable. The HTTP server starts immediately, so the UI is available even
+while the database is still booting (`/api/health` returns `503` until it is
+ready).
 
 ## REST API
 
@@ -175,6 +186,12 @@ All responses are JSON. Validation errors use
 | `POST` | `/api/rooms` | Create a room: `{"name":"random"}` |
 | `GET` | `/api/messages?room=general&limit=50&before=123` | Newest messages (ascending order), optional pagination by id |
 | `POST` | `/api/messages` | Persist and broadcast: `{"room":"general","username":"ada","body":"hi"}` |
+| `GET` | `/api/profile?username=ada` | Stored icon/color for a nickname, or `{"profile":null}` |
+| `PUT` | `/api/profile` | Save icon/color: `{"username":"ada","avatar":"🦊","color":"#7c5cff"}` |
+
+Messages include `avatar` and `avatarColor` (empty strings when the nickname has
+no custom profile). `avatar` is a short emoji/symbol (up to 8 code points) and
+`color` is a `#rrggbb` hex string.
 
 The API is also mounted without the `/api` prefix (for example `/health`),
 which keeps direct access to the pod and the nginx proxy interchangeable.
@@ -198,7 +215,7 @@ Client to server:
 
 | Type | Payload | Notes |
 | --- | --- | --- |
-| `join` | `{ "type":"join", "room":"general", "username":"ada" }` | Required before sending |
+| `join` | `{ "type":"join", "room":"general", "username":"ada", "avatar":"🦊", "color":"#7c5cff" }` | Required before sending; `avatar`/`color` are optional |
 | `message` | `{ "type":"message", "room":"general", "body":"hi" }` | Uses the joined username; broadcasts to the room |
 | `typing` | `{ "type":"typing" }` | Optional presence hint, throttled by the server |
 | `ping` | `{ "type":"ping" }` | App-level keepalive |
@@ -209,8 +226,9 @@ Server to client:
 | --- | --- |
 | `hello` | `{ clientId, serverTime, limits }` |
 | `joined` | `{ room, username }` |
-| `message` | `{ message: { id, room, username, body, createdAt } }` |
-| `presence` | `{ room, users: ["ada", "grace"] }` |
+| `message` | `{ message: { id, room, username, avatar, avatarColor, body, createdAt } }` |
+| `presence` | `{ room, users: ["ada", "grace"], profiles: { ada: { avatar, color } } }` |
+| `profile` | `{ profile: { username, avatar, color } }` broadcast when someone saves an icon |
 | `typing` | `{ room, username }` |
 | `pong` | `{ serverTime }` |
 | `error` | `{ code, message }` |
@@ -248,6 +266,8 @@ MariaDB entrypoint the first time the pod starts against an empty
 - `rooms(id, name UNIQUE, created_at)`
 - `messages(id, room_id FK, username, body, created_at)` with an index on
   `(room_id, id)` for history queries, plus the seeded `general` room
+- `profiles(username PK, avatar, color, updated_at)` for the custom icons and
+  background colors chosen in the web UI
 
 The same statements (all `CREATE TABLE IF NOT EXISTS` / idempotent) also live
 in `src/chat-server/lib/db.js` as a fallback for local development and for

@@ -2,8 +2,31 @@ const STORAGE_KEY = 'cda-chat-username';
 const HISTORY_LIMIT = 50;
 const MAX_RENDERED = 300;
 
+const AVATAR_OPTIONS = [
+  '\u{1F600}', '\u{1F60E}', '\u{1F913}', '\u{1F973}', '\u{1F63A}', '\u{1F98A}',
+  '\u{1F43C}', '\u{1F438}', '\u{1F984}', '\u{1F419}', '\u{1F41D}', '\u{1F989}',
+  '\u{1F427}', '\u{1F996}', '\u{1F47E}', '\u{1F916}', '\u{1F47D}', '\u{1F383}',
+  '\u{1F319}', '\u{2B50}', '\u{1F525}', '\u{1F308}', '\u{1F355}', '\u{2615}',
+  '\u{1F3A7}', '\u{1F680}', '\u{1F3AE}', '\u{1F4DA}',
+];
+
+const COLOR_OPTIONS = [
+  '#7c5cff', '#4f8cff', '#0ea5e9', '#17c8a0', '#2bb673', '#84cc16',
+  '#f0b429', '#f97316', '#ff6b6b', '#e05fa8', '#d946ef', '#64748b',
+];
+
 const els = {
   username: document.querySelector('#username'),
+  avatarButton: document.querySelector('#avatar-button'),
+  avatarDialog: document.querySelector('#avatar-dialog'),
+  avatarGrid: document.querySelector('#avatar-grid'),
+  colorGrid: document.querySelector('#color-grid'),
+  avatarPreview: document.querySelector('#avatar-preview'),
+  avatarPreviewName: document.querySelector('#avatar-preview-name'),
+  avatarReset: document.querySelector('#avatar-reset'),
+  avatarCancel: document.querySelector('#avatar-cancel'),
+  avatarClose: document.querySelector('#avatar-close'),
+  avatarSave: document.querySelector('#avatar-save'),
   rooms: document.querySelector('#rooms'),
   roomCount: document.querySelector('#room-count'),
   newRoomForm: document.querySelector('#new-room-form'),
@@ -23,11 +46,14 @@ const els = {
 
 const state = {
   username: '',
+  avatar: '',
+  avatarColor: '',
   room: 'general',
   rooms: [],
   messages: [],
   seen: new Set(),
   users: [],
+  profiles: {},
   typing: new Map(),
   ws: null,
   connected: false,
@@ -37,6 +63,7 @@ const state = {
   joinedKey: null,
   errorTimer: null,
   historyToken: 0,
+  profileToken: 0,
   closing: false,
 };
 
@@ -88,6 +115,48 @@ function initialsFor(name) {
     : Array.from(name.trim()).slice(0, 2).join('');
 
   return letters.toUpperCase();
+}
+
+function profileFor(username) {
+  const profile = state.profiles[username];
+
+  return {
+    avatar: profile?.avatar || '',
+    color: profile?.color || '',
+  };
+}
+
+function paintAvatar(element, { name, avatar = '', color = '' } = {}) {
+  element.textContent = avatar || initialsFor(name);
+  element.classList.toggle('emoji', Boolean(avatar));
+  element.style.background = color || colorFor(name);
+  element.title = name;
+
+  return element;
+}
+
+function ownProfile() {
+  return { avatar: state.avatar, color: state.avatarColor };
+}
+
+function updateIdentityAvatar() {
+  paintAvatar(els.avatarButton, { name: state.username || 'You', ...ownProfile() });
+}
+
+function applyOwnProfileToMessages() {
+  const key = state.username.toLowerCase();
+  let changed = false;
+
+  for (const message of state.messages) {
+    if (message.username.toLowerCase() !== key) continue;
+    if (message.avatar === state.avatar && message.avatarColor === state.avatarColor) continue;
+
+    message.avatar = state.avatar;
+    message.avatarColor = state.avatarColor;
+    changed = true;
+  }
+
+  if (changed) renderMessages({ scroll: false });
 }
 
 function formatTime(value) {
@@ -213,9 +282,8 @@ function renderPresence() {
   for (const username of visible) {
     const avatar = document.createElement('span');
     avatar.className = 'avatar';
-    avatar.title = username;
-    avatar.textContent = initialsFor(username);
-    avatar.style.background = colorFor(username);
+    avatar.dataset.username = username;
+    paintAvatar(avatar, { name: username, ...profileFor(username) });
     els.presence.append(avatar);
   }
 
@@ -240,8 +308,11 @@ function renderMessage(message) {
   item.className = `message${mine ? ' mine' : ''}`;
 
   avatar.className = 'avatar';
-  avatar.textContent = initialsFor(message.username);
-  avatar.style.background = colorFor(message.username);
+  paintAvatar(avatar, {
+    name: message.username,
+    avatar: message.avatar || '',
+    color: message.avatarColor || '',
+  });
 
   bubble.className = 'bubble';
 
@@ -348,6 +419,150 @@ async function loadHistory({ scroll = true } = {}) {
   }
 }
 
+async function loadProfile() {
+  const username = state.username;
+
+  if (!username) {
+    state.avatar = '';
+    state.avatarColor = '';
+    updateIdentityAvatar();
+    return;
+  }
+
+  const token = ++state.profileToken;
+
+  try {
+    const data = await api(`/profile?username=${encodeURIComponent(username)}`);
+
+    if (token !== state.profileToken || username !== state.username) return;
+
+    state.avatar = data.profile?.avatar || '';
+    state.avatarColor = data.profile?.color || '';
+  } catch (error) {
+    if (token === state.profileToken) showError(error.message);
+    return;
+  }
+
+  state.profiles[username] = ownProfile();
+  state.joinedKey = null;
+
+  updateIdentityAvatar();
+  applyOwnProfileToMessages();
+  renderPresence();
+
+  if (state.connected) sendJoin();
+}
+
+let avatarDraft = { avatar: '', color: '' };
+
+function ensureAvatarOptions() {
+  if (els.avatarGrid.childElementCount === 0) {
+    const fragment = document.createDocumentFragment();
+
+    for (const option of AVATAR_OPTIONS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.avatar = option;
+      button.textContent = option;
+      button.setAttribute('aria-label', `Use icon ${option}`);
+      button.addEventListener('click', () => {
+        avatarDraft.avatar = avatarDraft.avatar === option ? '' : option;
+        renderAvatarDialog();
+      });
+      fragment.append(button);
+    }
+
+    els.avatarGrid.append(fragment);
+  }
+
+  if (els.colorGrid.childElementCount === 0) {
+    const fragment = document.createDocumentFragment();
+
+    for (const option of COLOR_OPTIONS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.color = option;
+      button.style.background = option;
+      button.setAttribute('aria-label', `Use background ${option}`);
+      button.addEventListener('click', () => {
+        avatarDraft.color = avatarDraft.color === option ? '' : option;
+        renderAvatarDialog();
+      });
+      fragment.append(button);
+    }
+
+    els.colorGrid.append(fragment);
+  }
+}
+
+function renderAvatarDialog() {
+  const name = state.username || 'You';
+
+  paintAvatar(els.avatarPreview, { name, ...avatarDraft });
+  els.avatarPreviewName.textContent = avatarDraft.avatar
+    ? `${name} \u00b7 custom icon`
+    : `${name} \u00b7 initials`;
+
+  for (const button of els.avatarGrid.querySelectorAll('button')) {
+    const selected = button.dataset.avatar === avatarDraft.avatar;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  }
+
+  for (const button of els.colorGrid.querySelectorAll('button')) {
+    const selected = button.dataset.color === avatarDraft.color;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  }
+}
+
+function openAvatarDialog() {
+  ensureAvatarOptions();
+  avatarDraft = ownProfile();
+  renderAvatarDialog();
+  els.avatarDialog.showModal();
+}
+
+function closeAvatarDialog() {
+  if (els.avatarDialog.open) els.avatarDialog.close();
+}
+
+async function saveAvatar() {
+  if (!state.username) {
+    closeAvatarDialog();
+    showError('Choose a nickname before saving an icon.');
+    return;
+  }
+
+  const username = state.username;
+  els.avatarSave.disabled = true;
+
+  try {
+    const data = await api('/profile', {
+      method: 'PUT',
+      body: JSON.stringify({ username, avatar: avatarDraft.avatar, color: avatarDraft.color }),
+    });
+
+    if (username !== state.username) return;
+
+    state.avatar = data.profile?.avatar || '';
+    state.avatarColor = data.profile?.color || '';
+    state.profiles[username] = ownProfile();
+    state.joinedKey = null;
+
+    updateIdentityAvatar();
+    applyOwnProfileToMessages();
+    renderPresence();
+    closeAvatarDialog();
+
+    if (state.connected) sendJoin();
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    els.avatarSave.disabled = false;
+  }
+}
+
 function sendWs(payload) {
   if (state.ws?.readyState !== WebSocket.OPEN) return false;
 
@@ -359,7 +574,13 @@ function sendJoin() {
   const key = `${state.room}\u0000${state.username}`;
 
   if (state.joinedKey === key) return true;
-  if (!sendWs({ type: 'join', room: state.room, username: state.username })) return false;
+  if (!sendWs({
+    type: 'join',
+    room: state.room,
+    username: state.username,
+    avatar: state.avatar,
+    color: state.avatarColor,
+  })) return false;
 
   state.joinedKey = key;
   return true;
@@ -428,7 +649,41 @@ function handleSocketMessage(event) {
     case 'presence': {
       if (payload.room !== state.room) break;
       state.users = Array.isArray(payload.users) ? payload.users : [];
+      state.profiles = payload.profiles && typeof payload.profiles === 'object'
+        ? payload.profiles
+        : {};
       renderPresence();
+      break;
+    }
+
+    case 'profile': {
+      const profile = payload.profile;
+
+      if (!profile?.username) break;
+
+      const key = profile.username.toLowerCase();
+      const next = { avatar: profile.avatar || '', color: profile.color || '' };
+
+      state.profiles[profile.username] = next;
+
+      if (key === state.username.toLowerCase()) {
+        state.avatar = next.avatar;
+        state.avatarColor = next.color;
+        updateIdentityAvatar();
+      }
+
+      let changed = false;
+      for (const message of state.messages) {
+        if (message.username.toLowerCase() !== key) continue;
+        if (message.avatar === next.avatar && message.avatarColor === next.color) continue;
+
+        message.avatar = next.avatar;
+        message.avatarColor = next.color;
+        changed = true;
+      }
+
+      renderPresence();
+      if (changed) renderMessages({ scroll: false });
       break;
     }
 
@@ -600,6 +855,18 @@ async function submitMessage(event) {
 function bindEvents() {
   els.composer.addEventListener('submit', submitMessage);
 
+  els.avatarButton.addEventListener('click', openAvatarDialog);
+  els.avatarSave.addEventListener('click', saveAvatar);
+  els.avatarReset.addEventListener('click', () => {
+    avatarDraft = { avatar: '', color: '' };
+    renderAvatarDialog();
+  });
+  els.avatarCancel.addEventListener('click', closeAvatarDialog);
+  els.avatarClose.addEventListener('click', closeAvatarDialog);
+  els.avatarDialog.addEventListener('click', (event) => {
+    if (event.target === els.avatarDialog) closeAvatarDialog();
+  });
+
   els.body.addEventListener('input', () => {
     autoGrow();
 
@@ -626,10 +893,14 @@ function bindEvents() {
       if (!username) return;
 
       state.username = username;
+      state.avatar = '';
+      state.avatarColor = '';
       localStorage.setItem(STORAGE_KEY, username);
       state.joinedKey = null;
 
-      if (state.connected) sendJoin();
+      updateIdentityAvatar();
+      applyOwnProfileToMessages();
+      loadProfile();
     }, 350);
   });
 
@@ -676,12 +947,14 @@ function init() {
   state.room = roomFromHash() || 'general';
 
   els.username.value = state.username;
+  updateIdentityAvatar();
 
   renderRooms();
   renderMessages({ scroll: false });
   updateRoomHeader();
   bindEvents();
   connect();
+  loadProfile();
   loadHistory();
   refreshRooms({ silent: true });
 }
