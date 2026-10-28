@@ -1,0 +1,21 @@
+{
+  "name": "cda-chat-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lightweight chat server with REST API, WebSockets and a web UI, backed by MariaDB.",
+  "type": "module",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js && node --check lib/api.js && node --check lib/config.js && node --check lib/db.js && node --check lib/realtime.js && node --check lib/store.js && node --check lib/validation.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "mysql2": "^3.11.5",
+    "ws": "^8.18.0"
+  }
+}

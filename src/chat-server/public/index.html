@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>CDA Chat</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%237c5cff'/><path d='M18 22h28M18 32h20M18 42h12' stroke='white' stroke-width='5' stroke-linecap='round'/></svg>">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">#</div>
+        <div>
+          <h1>CDA Chat</h1>
+          <p>MariaDB &middot; REST &middot; WebSockets</p>
+        </div>
+      </div>
+
+      <label class="identity" for="username">
+        <span>Your nickname</span>
+        <input id="username" name="username" maxlength="32" autocomplete="nickname" spellcheck="false">
+      </label>
+
+      <section class="rooms-panel" aria-labelledby="rooms-title">
+        <div class="rooms-head">
+          <h2 id="rooms-title">Rooms</h2>
+          <span id="room-count" class="badge">0</span>
+        </div>
+        <ul id="rooms" class="rooms"></ul>
+
+        <form id="new-room-form" class="new-room">
+          <input id="new-room" maxlength="64" placeholder="new-room" autocomplete="off" aria-label="New room name">
+          <button type="submit" title="Create room" aria-label="Create room">+</button>
+        </form>
+      </section>
+
+      <div class="connection" id="connection" data-state="offline">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="connection-label">connecting&hellip;</span>
+      </div>
+    </aside>
+
+    <main class="chat">
+      <header class="chat-head">
+        <div>
+          <h2 id="room-title"># general</h2>
+          <p id="room-subtitle">Loading&hellip;</p>
+        </div>
+        <div id="presence" class="presence" aria-label="People in this room"></div>
+      </header>
+
+      <ol id="messages" class="messages" aria-live="polite" aria-relevant="additions"></ol>
+
+      <p id="typing" class="typing" aria-live="polite"></p>
+
+      <form id="composer" class="composer">
+        <textarea id="body" rows="1" maxlength="2000" placeholder="Message #general" aria-label="Message" required></textarea>
+        <button id="send" type="submit">Send</button>
+      </form>
+
+      <p id="error" class="error" role="alert" hidden></p>
+    </main>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

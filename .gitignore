@@ -1,2 +1,6 @@
 kubeconfig.yaml
 .vagrant
+node_modules/
+.env
+*.log
+chat-server.tar
