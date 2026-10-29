@@ -11,11 +11,12 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "check": "node --check server.js && node --check lib/api.js && node --check lib/config.js && node --check lib/db.js && node --check lib/realtime.js && node --check lib/store.js && node --check lib/validation.js && node --check public/app.js"
+    "check": "node --check server.js && node --check loadgen.js && node --check lib/api.js && node --check lib/bus.js && node --check lib/config.js && node --check lib/db.js && node --check lib/realtime.js && node --check lib/store.js && node --check lib/validation.js && node --check public/app.js"
   },
   "dependencies": {
     "express": "^4.21.2",
     "mysql2": "^3.11.5",
+    "nats": "^2.29.3",
     "ws": "^8.18.0"
   }
 }

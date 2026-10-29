@@ -9,7 +9,14 @@ export const config = {
   version: '1.0.0',
   host: process.env.HOST || '0.0.0.0',
   port: positiveInt(process.env.PORT, 8080),
+  metricsPort: positiveInt(process.env.METRICS_PORT, 9091),
   publicDir: fileURLToPath(new URL('../public/', import.meta.url)),
+
+  nats: {
+    url: process.env.NATS_URL || 'nats://127.0.0.1:4222',
+    reconnectMs: positiveInt(process.env.NATS_RECONNECT_MS, 2000),
+    presenceTtlMs: positiveInt(process.env.PRESENCE_TTL_MS, 30_000),
+  },
 
   db: {
     host: process.env.DB_HOST || '127.0.0.1',

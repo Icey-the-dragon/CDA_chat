@@ -168,13 +168,18 @@ spec:
     port: 3306
     targetPort: mysql
 ---
-# 2.1 Chat Server Deployment on Chat Worker
+# 2.1 Chat Server Deployment on the autoscaling app worker
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: chat-server
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: chat-server
@@ -182,10 +187,19 @@ spec:
     metadata:
       labels:
         app: chat-server
+      annotations:
+        # Prometheus scrapes the dedicated metrics port, which is not exposed
+        # through the chat Service or nginx.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9091"
+        prometheus.io/path: "/metrics"
     spec:
+      # The lab has one dedicated app worker with the preloaded image. The
+      # replicas created by the HPA stay there; the fixed edge/stateful pods
+      # keep their own node labels.
       nodeSelector:
         role: chat
-      terminationGracePeriodSeconds: 15
+      terminationGracePeriodSeconds: 30
       containers:
       - name: chat
         image: chat-server:latest # build it locally and import it into the chat worker
@@ -193,9 +207,19 @@ spec:
         ports:
         - name: http
           containerPort: 8080 # WebUI + REST + WebSocket
+        - name: metrics
+          containerPort: 9091 # Prometheus only; not in the Service
         env:
         - name: PORT
           value: "8080"
+        - name: METRICS_PORT
+          value: "9091"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NATS_URL
+          value: "nats://nats-service:4222"
         - name: DB_HOST
           value: mariadb-service
         - name: DB_PORT
@@ -215,13 +239,21 @@ spec:
             secretKeyRef:
               name: chat-db-credentials
               key: password
-        readinessProbe:
+        - name: DB_POOL_SIZE
+          value: "5"
+        startupProbe:
           httpGet:
             path: /api/livez
             port: http
-          initialDelaySeconds: 3
-          periodSeconds: 10
+          failureThreshold: 30
+          periodSeconds: 2
+        readinessProbe:
+          httpGet:
+            path: /api/ready
+            port: http
+          periodSeconds: 5
           timeoutSeconds: 3
+          failureThreshold: 3
         livenessProbe:
           httpGet:
             path: /api/livez
@@ -229,19 +261,32 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 20
           timeoutSeconds: 3
+        lifecycle:
+          preStop:
+            exec:
+              command: ["sh", "-c", "sleep 5"]
         resources:
           requests:
-            cpu: 25m
-            memory: 48Mi
+            cpu: 100m
+            memory: 64Mi
           limits:
-            cpu: 250m
-            memory: 128Mi
+            cpu: 500m
+            memory: 192Mi
         securityContext:
           allowPrivilegeEscalation: false
           runAsNonRoot: true
           runAsUser: 1000
           capabilities:
             drop: ["ALL"]
+      # Spread replicas if the lab grows more app workers. ScheduleAnyway keeps
+      # the demo working with the single role=chat worker used here.
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: chat-server
 ---
 # 2.2 Chat Server Service (used by nginx)
 apiVersion: v1
@@ -255,6 +300,128 @@ spec:
   - name: http
     port: 8080
     targetPort: http
+---
+# 2.3 NATS event bus shared by every chat replica
+# NATS is stateless and fixed on the control plane: it is not autoscaled, just
+# like MariaDB, Prometheus, Grafana and nginx.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nats
+  template:
+    metadata:
+      labels:
+        app: nats
+    spec:
+      nodeSelector:
+        role: control-plane
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: nats
+        image: nats:2.10-alpine
+        imagePullPolicy: IfNotPresent
+        args: ["-m", "8222"]
+        ports:
+        - name: client
+          containerPort: 4222
+        - name: monitor
+          containerPort: 8222
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: monitor
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: monitor
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop: ["ALL"]
+---
+# 2.4 NATS Service (nats-service:4222)
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats-service
+spec:
+  selector:
+    app: nats
+  ports:
+  - name: client
+    port: 4222
+    targetPort: client
+---
+# 2.5 Keep at least one chat replica during voluntary disruptions
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: chat-server
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: chat-server
+---
+# 2.6 Pod autoscaling based on CPU requests
+# metrics-server ships with k3s, so the HPA can read CPU without extra
+# components. The app also exposes NATS/WebSocket metrics on :9091 for
+# Prometheus, but CPU is the trigger used by this lab demo.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: chat-server
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: chat-server
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 2
+        periodSeconds: 30
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 120
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
 ---
 # 3.1 Prometheus scraper
 apiVersion: v1
@@ -310,10 +477,30 @@ data:
       - job_name: 'k3s-nodes'
         static_configs:
           - targets: ['192.168.56.10:6443', '192.168.56.11:9100', '192.168.56.12:9100', '192.168.56.13:9100', '192.168.56.14:9100']
-      # Scrape Kubernetes pods automatically
+      # Scrape pods that opt in with prometheus.io/scrape=true. The chat pods
+      # expose /metrics on their dedicated port 9091.
       - job_name: 'kubernetes-pods'
         kubernetes_sd_configs:
           - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
 ---
 # 3.5 Prometheus Worker itself
 apiVersion: apps/v1
@@ -331,14 +518,29 @@ spec:
         app: prometheus
     spec:
       serviceAccountName: prometheus
+      # Keep monitoring on its fixed worker so the autoscaled chat pods do not
+      # compete with Prometheus.
+      nodeSelector:
+        role: grafana
       containers:
       - name: prometheus
         image: prom/prometheus:latest
+        args:
+        - "--config.file=/etc/prometheus/prometheus.yml"
+        - "--storage.tsdb.path=/prometheus"
+        - "--storage.tsdb.retention.time=2h"
         ports:
         - containerPort: 9090
         volumeMounts:
         - name: prometheus-config-volume
           mountPath: /etc/prometheus/
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 384Mi
       volumes:
       - name: prometheus-config-volume
         configMap:
