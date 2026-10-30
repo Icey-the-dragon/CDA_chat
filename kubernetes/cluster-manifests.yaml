@@ -499,8 +499,17 @@ data:
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
-          - source_labels: [__meta_kubernetes_pod_label_app]
+          # - source_labels: [__meta_kubernetes_pod_name]
+          #   target_label: pod
+          # - source_labels: [__meta_kubernetes_pod_label_app]
+          #   target_label: app
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
             target_label: app
+          - source_labels: [__meta_kubernetes_pod_name]
+            regex: '.*-([^-]+)$'
+            replacement: '$1'
+            target_label: replica
+
 ---
 # 3.5 Prometheus Worker itself
 apiVersion: apps/v1

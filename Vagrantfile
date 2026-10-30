@@ -18,7 +18,7 @@ Vagrant.configure("2") do |config|
 
   # Worker topology. Each worker applies its own role label when it joins.
   nodes = {
-    "k3s-worker-grafana" => { ip: "192.168.56.11", role: "grafana", memory: "756" },
+    "k3s-worker-grafana" => { ip: "192.168.56.11", role: "grafana", memory: "1024" },
     "k3s-worker-db"      => { ip: "192.168.56.12", role: "db",      memory: "1024" }, # MariaDB needs headroom
     # The app worker hosts the autoscaled chat replicas. Keep it at 1 vCPU:
     # with Windows Hyper-V enabled, VirtualBox falls back to NEM and this guest
