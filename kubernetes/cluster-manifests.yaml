@@ -609,8 +609,10 @@ spec:
         ports:
         - containerPort: 3000
         env:
+        # Grafana builds redirects from root_url, so it must include the host
+        # port that the browser uses (nginx is published on host port 8080).
         - name: GF_SERVER_ROOT_URL
-          value: "%(protocol)s://%(domain)s/grafana/"
+          value: "http://localhost:8080/grafana/"
         - name: GF_SERVER_SERVE_FROM_SUB_PATH
           value: "true"
         volumeMounts:

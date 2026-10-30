@@ -1,6 +1,14 @@
 Vagrant.configure("2") do |config|
   config.vm.box = "ubuntu/jammy64"
 
+  # A loaded host (or one that just resumed from sleep) can take longer than
+  # net-ssh's 15 second banner timeout before a VM answers. Retry instead of
+  # failing provisioning with "timeout during server version negotiating".
+  config.ssh.connect_timeout = 60
+  config.ssh.connect_retries = 10
+  config.ssh.connect_retry_delay = 5
+  config.vm.boot_timeout = 600
+
   # ise rsync or disable shared folders to avoid Windows NFS/vboxsf errors
   config.vm.synced_folder ".", "/vagrant", type: "rsync",
     rsync__exclude: [".git/", ".vagrant/", "node_modules/"] # keep node_modules out of the VMs
@@ -8,19 +16,18 @@ Vagrant.configure("2") do |config|
   # static pass so workers cn join instantly without waiting
   K3S_TOKEN = "supah-secret-:3" #private token / password to join cluster
 
-  # Worker topology. Keeping the names and roles here lets the master reconcile
-  # node labels for VMs that joined before the labels were introduced.
+  # Worker topology. Each worker applies its own role label when it joins.
   nodes = {
     "k3s-worker-grafana" => { ip: "192.168.56.11", role: "grafana", memory: "756" },
     "k3s-worker-db"      => { ip: "192.168.56.12", role: "db",      memory: "1024" }, # MariaDB needs headroom
-    # The app worker hosts the autoscaled chat replicas. 2 vCPU / 1.5 GB leaves
-    # room for three 500m/192Mi chat pods plus the k3s agent.
-    "k3s-worker-chat"    => { ip: "192.168.56.13", role: "chat",    memory: "1536", cpus: 2 },
+    # The app worker hosts the autoscaled chat replicas. Keep it at 1 vCPU:
+    # with Windows Hyper-V enabled, VirtualBox falls back to NEM and this guest
+    # hangs during boot when it has 2 vCPUs (the 1 vCPU config boots reliably).
+    # The HPA demo still has plenty of CPU pressure because the chat pods
+    # request 100m each and the load generator drives them past 60%.
+    "k3s-worker-chat"    => { ip: "192.168.56.13", role: "chat",    memory: "1536", cpus: 1 },
     "k3s-worker-nginx"   => { ip: "192.168.56.14", role: "nginx",   memory: "512", forward_port: 8080, node_port: 30080 } # webUI /grafana proxied to graphana WebUI, etc
   }
-
-  # One "name role" line per worker, consumed by the master-side reconciler.
-  role_labels = nodes.map { |name, info| "#{name} #{info[:role]}" }.join("\n")
 
   # Master Node (Controller)
   config.vm.define "k3s-master" do |master|
@@ -39,6 +46,7 @@ Vagrant.configure("2") do |config|
         --advertise-address 192.168.56.10 \
         --node-name k3s-master \
         --node-label role=control-plane \
+        --node-label node-role.kubernetes.io/control-plane= \
         --flannel-iface enp0s8
       
       # Copy kubeconfig to /vagrant so your host/master can use it if synced (mostly if i want to attach from host something)
@@ -46,72 +54,16 @@ Vagrant.configure("2") do |config|
       sudo chmod 644 /vagrant/kubeconfig.yaml 2>/dev/null || true
 
       # Make the label idempotent for clusters created before this line existed.
-      sudo k3s kubectl label node k3s-master role=control-plane --overwrite 2>/dev/null || true
-
-      # kubelet only applies --node-label when a node first registers, and
-      # workers boot after this provisioner runs. Reconcile all role labels from
-      # the master in the background so old clusters are fixed by a provision
-      # and new workers are labelled as soon as they appear.
-      sudo tee /etc/rancher/k3s/role-labels.tsv >/dev/null <<'EOF'
-k3s-master control-plane
-#{role_labels}
-EOF
-
-      sudo tee /usr/local/bin/k3s-reconcile-node-labels >/dev/null <<'EOF'
-#!/bin/sh
-# Apply role labels to every node in the static topology. Safe to re-run.
-set -u
-
-attempt=0
-while [ "$attempt" -lt 180 ]; do
-  pending=0
-  while read -r name role; do
-    [ -n "$name" ] || continue
-    if ! k3s kubectl get node "$name" >/dev/null 2>&1; then
-      pending=1
-      continue
-    fi
-    k3s kubectl label node "$name" \
-      "role=$role" \
-      "node-role.kubernetes.io/$role=" \
-      --overwrite >/dev/null 2>&1 || pending=1
-  done < /etc/rancher/k3s/role-labels.tsv
-  if [ "$pending" -eq 0 ]; then
-    echo "k3s-reconcile-node-labels: all role labels applied"
-    exit 0
-  fi
-  attempt=$((attempt + 1))
-  sleep 10
-done
-
-echo "k3s-reconcile-node-labels: timed out waiting for all nodes" >&2
-exit 0
-EOF
-      sudo chmod 0755 /usr/local/bin/k3s-reconcile-node-labels
-
-      sudo tee /etc/systemd/system/k3s-reconcile-node-labels.service >/dev/null <<'EOF'
-[Unit]
-Description=Reconcile k3s node role labels
-After=k3s.service
-Wants=k3s.service
-
-[Service]
-# Type=simple so the wait loop runs in the background and does not delay
-# multi-user.target while the workers are still booting.
-Type=simple
-ExecStart=/usr/local/bin/k3s-reconcile-node-labels
-
-[Install]
-WantedBy=multi-user.target
-EOF
-      sudo systemctl daemon-reload
-      sudo systemctl enable k3s-reconcile-node-labels.service
-      # restart also starts an inactive unit, so provisioning an existing
-      # cluster always re-applies the current labels.
-      sudo systemctl restart k3s-reconcile-node-labels.service || true
+      sudo k3s kubectl label node k3s-master \
+        role=control-plane \
+        node-role.kubernetes.io/control-plane= \
+        --overwrite 2>/dev/null || true
 
       if [ -d "/vagrant/kubernetes" ]; then
         sudo k3s kubectl apply -f /vagrant/kubernetes/
+        # default.conf is mounted with subPath, so ConfigMap updates do not
+        # reach the running nginx pod. Roll it on every provision.
+        sudo k3s kubectl rollout restart deployment/nginx-router 2>/dev/null || true
       else
         echo "Manifests folder not found!"
       fi
@@ -157,6 +109,7 @@ EOF
         --node-ip #{info[:ip]} \
         --node-name #{name} \
         --node-label role=#{info[:role]} \
+        --node-label node-role.kubernetes.io/#{info[:role]}= \
         --flannel-iface enp0s8
         # thank god for predictable network interface names 
 

@@ -79,23 +79,20 @@ The lab nodes have deliberately different jobs:
 | `k3s-master` | `control-plane` | k3s server + NATS |
 | `k3s-worker-grafana` | `grafana` | Prometheus + Grafana |
 | `k3s-worker-db` | `db` | MariaDB + PVC |
-| `k3s-worker-chat` | `chat` | 1–3 autoscaled chat pods (2 vCPU, 1.5 GB) |
+| `k3s-worker-chat` | `chat` | 1–3 autoscaled chat pods (1 vCPU, 1.5 GB) |
 | `k3s-worker-nginx` | `nginx` | fixed nginx edge, host port 8080 → NodePort 30080 |
 
 NATS, MariaDB, Prometheus, Grafana and nginx have `replicas: 1` and node
 selectors. Only the chat Deployment has an HPA. Vagrant/VirtualBox node
 autoscaling is out of scope; the demo scales pods on the existing app worker.
 
-Node roles are applied at join time and are also reconciled by
-`k3s-reconcile-node-labels.service` on the master, which waits for workers in
-the background and re-runs on every provision. It sets both `role=<role>` (used
-by the node selectors) and the standard `node-role.kubernetes.io/<role>` label
-(shown in the `ROLES` column). VMs created before the labels existed are fixed
-by re-running the master provisioner:
+Node roles are applied at join time with `--node-label`: `role=<role>` drives the
+node selectors and `node-role.kubernetes.io/<role>` fills the `ROLES` column.
+No background reconciler is needed. VMs created before those flags existed keep
+their original labels until they rejoin the cluster; add them by hand if needed:
 
 ```bash
-vagrant provision k3s-master
-# On the master:
+sudo k3s kubectl label node <node> role=<role> node-role.kubernetes.io/<role>= --overwrite
 sudo k3s kubectl get nodes -L role
 ```
 
@@ -270,6 +267,23 @@ KEDA later. Grafana is already wired to Prometheus if you want to chart them.
 | Chat web UI | <http://localhost:8080/> |
 | Grafana | <http://localhost:8080/grafana/> |
 | Chat health (direct) | <http://localhost:8080/api/health> |
+
+Grafana runs with `GF_SERVER_SERVE_FROM_SUB_PATH=true`, so nginx forwards the
+`/grafana/` prefix unchanged and Grafana's `root_url` includes the browser-facing
+port (`8080`). Both forms work and keep the port:
+
+```text
+/grafana/  -> 302 Location: /grafana/login
+/grafana   -> 301 Location: http://localhost:8080/grafana/
+```
+
+If you change `kubernetes/nginx-configmap.yaml` or `nginx/default.conf`, apply
+the ConfigMap and restart nginx so it reloads the mounted file:
+
+```bash
+vagrant ssh k3s-master -c "sudo k3s kubectl apply -f /vagrant/kubernetes/"
+vagrant ssh k3s-master -c "sudo k3s kubectl rollout restart deployment/nginx-router"
+```
 
 Open the chat in two browser windows to see WebSocket messages and presence
 updates in real time.
@@ -483,8 +497,10 @@ vagrant ssh k3s-master -c "sudo k3s kubectl exec deploy/mariadb -- mariadb -ucha
   temporarily down. `/api/health` reports the full dependency state for humans
   and monitoring.
 - **Worker memory.** The db worker and the monitoring worker are bumped to 1 GB
-  in the Vagrantfile, and the app worker to 1.5 GB with 2 vCPUs, so the fixed
-  services and the autoscaled chat replicas fit comfortably.
+  in the Vagrantfile, and the app worker to 1.5 GB with 1 vCPU, so the fixed
+  services and the autoscaled chat replicas fit comfortably. The app worker is
+  deliberately single-vCPU because this guest hangs at boot with 2 vCPUs when
+  VirtualBox falls back to NEM on a Hyper-V host.
 - **Multi-NIC nodes.** Every VirtualBox VM gets the same NAT address
   (`10.0.2.15`), so k3s pins the node IP and Flannel to the host-only network
   (`192.168.56.0/24`, interface `enp0s8`). Without this the nodes report
