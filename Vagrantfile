@@ -46,10 +46,25 @@ Vagrant.configure("2") do |config|
         --advertise-address 192.168.56.10 \
         --node-name k3s-master \
         --node-label role=control-plane \
-        --node-label node-role.kubernetes.io/control-plane= \
+        --node-label control-plane= \
         --flannel-iface enp0s8
+      echo "Waiting for K3s API to become ready..."
+      for attempt in $(seq 1 120); do
+        if sudo k3s kubectl get nodes >/dev/null 2>&1; then
+          echo "K3s API is ready."
+          break
+        fi
+        sleep 2
+      done
+
+      if ! sudo k3s kubectl get nodes >/dev/null 2>&1; then
+        echo "K3s did not become ready; recent service logs:"
+        sudo journalctl -u k3s -b --no-pager -n 150
+        exit 1
+      fi
       
       # Copy kubeconfig to /vagrant so your host/master can use it if synced (mostly if i want to attach from host something)
+      echo "Copying kubeconfig to host..."
       sudo cp /etc/rancher/k3s/k3s.yaml /vagrant/kubeconfig.yaml 2>/dev/null || true
       sudo chmod 644 /vagrant/kubeconfig.yaml 2>/dev/null || true
 
@@ -58,7 +73,8 @@ Vagrant.configure("2") do |config|
         role=control-plane \
         node-role.kubernetes.io/control-plane= \
         --overwrite 2>/dev/null || true
-
+      
+      echo "Waiting for other nodes..."
       if [ -d "/vagrant/kubernetes" ]; then
         sudo k3s kubectl apply -f /vagrant/kubernetes/
         # default.conf is mounted with subPath, so ConfigMap updates do not
@@ -112,6 +128,7 @@ Vagrant.configure("2") do |config|
         --node-label node-role.kubernetes.io/#{info[:role]}= \
         --flannel-iface enp0s8
         # thank god for predictable network interface names 
+
 
         # On a re-provision the agent is already running, so import a rebuilt
         # tarball immediately instead of waiting for the next k3s restart.
