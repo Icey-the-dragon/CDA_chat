@@ -59,6 +59,28 @@ export function createApiRouter({ hub }) {
         error: database.error,
       },
       realtime: hub.stats(),
+      nats: hub.busStatus(),
+    });
+  }));
+
+  // Readiness for Kubernetes. A replica can only participate correctly in
+  // cross-pod chat when it can reach MariaDB and the shared NATS bus.
+  router.get('/ready', wrap(async (request, response) => {
+    const connected = await pingDatabase();
+    const database = dbHealth();
+    const nats = hub.busStatus();
+    const ready = connected && database.ready && nats.connected;
+
+    response.status(ready ? 200 : 503).json({
+      status: ready ? 'ready' : 'not_ready',
+      database: {
+        ready: database.ready,
+        connected,
+      },
+      nats: {
+        connected: nats.connected,
+        server: nats.server,
+      },
     });
   }));
 

@@ -12,7 +12,7 @@ COPY . .
 
 USER node
 
-EXPOSE 8080
+EXPOSE 8080 9091
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 8080) + '/api/livez').then((res) => process.exit(res.ok ? 0 : 1)).catch(() => process.exit(1))"

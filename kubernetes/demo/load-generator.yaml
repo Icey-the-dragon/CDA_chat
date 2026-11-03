@@ -1,0 +1,58 @@
+# HPA demo load generator.
+#
+# This file lives in a subdirectory so `kubectl apply -f kubernetes/` does not
+# start the load automatically. Apply it when you want to watch the HPA scale:
+#
+#   kubectl apply -f kubernetes/demo/load-generator.yaml
+#   watch kubectl get hpa,pods -l app=chat-server
+#   kubectl delete job chat-loadgen
+#
+# It reuses the locally built chat image, so the Job is scheduled on the same
+# worker that already has chat-server:latest.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: chat-loadgen
+  labels:
+    app: chat-loadgen
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: chat-loadgen
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        role: chat
+      containers:
+      - name: loadgen
+        image: chat-server:latest
+        imagePullPolicy: IfNotPresent
+        command: ["node", "loadgen.js"]
+        env:
+        - name: LOADGEN_URL
+          value: "http://chat-server-service:8080"
+        - name: LOADGEN_ROOM
+          value: "loadtest"
+        - name: LOADGEN_WORKERS
+          value: "10"
+        - name: LOADGEN_DELAY_MS
+          value: "75"
+        - name: LOADGEN_DURATION_MS
+          value: "180000"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 300m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop: ["ALL"]

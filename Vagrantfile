@@ -1,12 +1,33 @@
 Vagrant.configure("2") do |config|
   config.vm.box = "ubuntu/jammy64"
 
+  # A loaded host (or one that just resumed from sleep) can take longer than
+  # net-ssh's 15 second banner timeout before a VM answers. Retry instead of
+  # failing provisioning with "timeout during server version negotiating".
+  config.ssh.connect_timeout = 60
+  config.ssh.connect_retries = 10
+  config.ssh.connect_retry_delay = 5
+  config.vm.boot_timeout = 600
+
   # ise rsync or disable shared folders to avoid Windows NFS/vboxsf errors
   config.vm.synced_folder ".", "/vagrant", type: "rsync",
     rsync__exclude: [".git/", ".vagrant/", "node_modules/"] # keep node_modules out of the VMs
 
   # static pass so workers cn join instantly without waiting
   K3S_TOKEN = "supah-secret-:3" #private token / password to join cluster
+
+  # Worker topology. Each worker applies its own role label when it joins.
+  nodes = {
+    "k3s-worker-grafana" => { ip: "192.168.56.11", role: "grafana", memory: "1024" },
+    "k3s-worker-db"      => { ip: "192.168.56.12", role: "db",      memory: "1024" }, # MariaDB needs headroom
+    # The app worker hosts the autoscaled chat replicas. Keep it at 1 vCPU:
+    # with Windows Hyper-V enabled, VirtualBox falls back to NEM and this guest
+    # hangs during boot when it has 2 vCPUs (the 1 vCPU config boots reliably).
+    # The HPA demo still has plenty of CPU pressure because the chat pods
+    # request 100m each and the load generator drives them past 60%.
+    "k3s-worker-chat"    => { ip: "192.168.56.13", role: "chat",    memory: "1536", cpus: 1 },
+    "k3s-worker-nginx"   => { ip: "192.168.56.14", role: "nginx",   memory: "512", forward_port: 8080, node_port: 30080 } # webUI /grafana proxied to graphana WebUI, etc
+  }
 
   # Master Node (Controller)
   config.vm.define "k3s-master" do |master|
@@ -23,14 +44,26 @@ Vagrant.configure("2") do |config|
       curl -sfL https://get.k3s.io | K3S_TOKEN="#{K3S_TOKEN}" sh -s - server --cluster-init \
         --node-ip 192.168.56.10 \
         --advertise-address 192.168.56.10 \
+        --node-name k3s-master \
+        --node-label role=control-plane \
+        --node-label node-role.kubernetes.io/control-plane= \
         --flannel-iface enp0s8
       
       # Copy kubeconfig to /vagrant so your host/master can use it if synced (mostly if i want to attach from host something)
       sudo cp /etc/rancher/k3s/k3s.yaml /vagrant/kubeconfig.yaml 2>/dev/null || true
       sudo chmod 644 /vagrant/kubeconfig.yaml 2>/dev/null || true
 
+      # Make the label idempotent for clusters created before this line existed.
+      sudo k3s kubectl label node k3s-master \
+        role=control-plane \
+        node-role.kubernetes.io/control-plane= \
+        --overwrite 2>/dev/null || true
+
       if [ -d "/vagrant/kubernetes" ]; then
         sudo k3s kubectl apply -f /vagrant/kubernetes/
+        # default.conf is mounted with subPath, so ConfigMap updates do not
+        # reach the running nginx pod. Roll it on every provision.
+        sudo k3s kubectl rollout restart deployment/nginx-router 2>/dev/null || true
       else
         echo "Manifests folder not found!"
       fi
@@ -38,20 +71,13 @@ Vagrant.configure("2") do |config|
   end
 
   # Worker Nodes
-  nodes = {
-    "k3s-worker-grafana" => { ip: "192.168.56.11", role: "grafana", memory: "768" },
-    "k3s-worker-db"      => { ip: "192.168.56.12", role: "db",      memory: "1024" }, # MariaDB needs headroom
-    "k3s-worker-chat"    => { ip: "192.168.56.13", role: "chat",    memory: "512" },
-    "k3s-worker-nginx"   => { ip: "192.168.56.14", role: "nginx",   memory: "512", forward_port: 8080, node_port: 30080 } # webUI /grafana proxied to graphana WebUI, etc
-  }
-
   nodes.each do |name, info|
     config.vm.define name do |node|
       node.vm.hostname = name
       node.vm.network "private_network", ip: info[:ip]
       node.vm.provider "virtualbox" do |vb|
         vb.memory = info[:memory] || "512"
-        vb.cpus = 1
+        vb.cpus = info[:cpus] || 1
       end
 
       #port forwards
@@ -83,6 +109,7 @@ Vagrant.configure("2") do |config|
         --node-ip #{info[:ip]} \
         --node-name #{name} \
         --node-label role=#{info[:role]} \
+        --node-label node-role.kubernetes.io/#{info[:role]}= \
         --flannel-iface enp0s8
         # thank god for predictable network interface names 
 
