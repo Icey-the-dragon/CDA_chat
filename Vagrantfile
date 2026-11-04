@@ -4,6 +4,8 @@ Vagrant.configure("2") do |config|
   # A loaded host (or one that just resumed from sleep) can take longer than
   # net-ssh's 15 second banner timeout before a VM answers. Retry instead of
   # failing provisioning with "timeout during server version negotiating".
+  config.ssh.insert_key = false
+  config.ssh.forward_agent = true
   config.ssh.connect_timeout = 60
   config.ssh.connect_retries = 10
   config.ssh.connect_retry_delay = 5
@@ -20,11 +22,6 @@ Vagrant.configure("2") do |config|
   nodes = {
     "k3s-worker-grafana" => { ip: "192.168.56.11", role: "grafana", memory: "1024" },
     "k3s-worker-db"      => { ip: "192.168.56.12", role: "db",      memory: "1024" }, # MariaDB needs headroom
-    # The app worker hosts the autoscaled chat replicas. Keep it at 1 vCPU:
-    # with Windows Hyper-V enabled, VirtualBox falls back to NEM and this guest
-    # hangs during boot when it has 2 vCPUs (the 1 vCPU config boots reliably).
-    # The HPA demo still has plenty of CPU pressure because the chat pods
-    # request 100m each and the load generator drives them past 60%.
     "k3s-worker-chat"    => { ip: "192.168.56.13", role: "chat",    memory: "1536", cpus: 1 },
     "k3s-worker-nginx"   => { ip: "192.168.56.14", role: "nginx",   memory: "512", forward_port: 8080, node_port: 30080 } # webUI /grafana proxied to graphana WebUI, etc
   }
@@ -77,8 +74,6 @@ Vagrant.configure("2") do |config|
       echo "Waiting for other nodes..."
       if [ -d "/vagrant/kubernetes" ]; then
         sudo k3s kubectl apply -f /vagrant/kubernetes/
-        # default.conf is mounted with subPath, so ConfigMap updates do not
-        # reach the running nginx pod. Roll it on every provision.
         sudo k3s kubectl rollout restart deployment/nginx-router 2>/dev/null || true
       else
         echo "Manifests folder not found!"
@@ -125,7 +120,6 @@ Vagrant.configure("2") do |config|
         --node-ip #{info[:ip]} \
         --node-name #{name} \
         --node-label role=#{info[:role]} \
-        --node-label node-role.kubernetes.io/#{info[:role]}= \
         --flannel-iface enp0s8
         # thank god for predictable network interface names 
 
