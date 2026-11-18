@@ -1,9 +1,11 @@
 node_modules
 npm-debug.log*
-.env
-.env.*
+yarn-debug.log*
+yarn-error.log*
 .git
 .gitignore
-Dockerfile
-.dockerignore
-*.md
+.DS_Store
+.env
+*.log
+*.tar
+README.md
