@@ -36,7 +36,10 @@ Vagrant.configure("2") do |config|
       vb.memory = "1536" # At least 1.5GB for master
       vb.cpus = 2
     end
-    master.vm.provision "shell", inline: <<-SHELL
+    # Upload to /home/vagrant instead of /tmp: some boxes/guest hardening mount
+    # /tmp with noexec, which makes Vagrant fail with
+    # "bash: line 4: /tmp/vagrant-shell: Permission denied".
+    master.vm.provision "shell", upload_path: "/home/vagrant/vagrant-provision.sh", inline: <<-SHELL
       echo "Installing K3s Master..."
       curl -sfL https://get.k3s.io | K3S_TOKEN="#{K3S_TOKEN}" sh -s - server --cluster-init \
         --node-ip 192.168.56.10 \
@@ -96,7 +99,7 @@ Vagrant.configure("2") do |config|
         node.vm.network "forwarded_port", guest: info[:node_port], host: info[:forward_port]
       end
 
-      node.vm.provision "shell", inline: <<-SHELL
+      node.vm.provision "shell", upload_path: "/home/vagrant/vagrant-provision.sh", inline: <<-SHELL
         # k3s imports every tarball found in this directory when it starts, so
         # the locally built chat image exists before the pod is scheduled.
         # The tarball is built on the host and reaches this VM through /vagrant.
