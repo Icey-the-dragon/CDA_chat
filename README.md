@@ -174,7 +174,7 @@ Useful: `vagrant ssh k3s-master -c "sudo k3s kubectl get pods -o wide"`.
 - Start the cluster:
 
   ```bash
-  vagrant --vagrantfile=Vagrantfile.docker up --provider=docker
+  VAGRANT_VAGRANTFILE=Vagrantfile.docker vagrant up --provider=docker
   ```
 
 - Teardown: `vagrant --vagrantfile=Vagrantfile.docker destroy -f` (and remove the network with `docker network rm cda-vagrant` if desired).

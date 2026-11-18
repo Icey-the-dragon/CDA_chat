@@ -23,8 +23,8 @@ for cmd in docker k3d kubectl; do
   fi
 done
 
-if [ ! -f k3d-cluster.yaml ]; then
-  echo "Error: k3d-cluster.yaml not found (run from the repository root)." >&2
+if [ ! -f kubernetes/docker-k3s.yaml ]; then
+  echo "Error: kubernetes/docker-k3s.yaml not found (run from the repository root)." >&2
   exit 1
 fi
 
@@ -35,7 +35,7 @@ if k3d cluster list 2>/dev/null | awk '{print $1}' | grep -qx "$CLUSTER_NAME"; t
   echo "==> Cluster '${CLUSTER_NAME}' already exists; reusing it."
 else
   echo "==> Creating k3d cluster '${CLUSTER_NAME}'..."
-  k3d cluster create --config k3d-cluster.yaml
+  k3d cluster create --config kubernetes/docker-k3s.yaml
 fi
 
 echo "==> Waiting for nodes to be Ready..."

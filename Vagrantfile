@@ -13,7 +13,7 @@ Vagrant.configure("2") do |config|
 
   # ise rsync or disable shared folders to avoid Windows NFS/vboxsf errors
   config.vm.synced_folder ".", "/vagrant", type: "rsync",
-    rsync__exclude: [".git/", ".vagrant/", "node_modules/"] # keep node_modules out of the VMs
+    rsync__exclude: [".git/", ".vagrant/", "node_modules/"] # keep node_modules out of the VMsgi
 
   # static pass so workers cn join instantly without waiting
   K3S_TOKEN = "supah-secret-:3" #private token / password to join cluster
