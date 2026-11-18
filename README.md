@@ -169,15 +169,35 @@ Useful: `vagrant ssh k3s-master -c "sudo k3s kubectl get pods -o wide"`.
 `Vagrantfile.docker` is an experimental alternative that uses **Docker containers** as Vagrant "machines" instead of VirtualBox VMs (and provisions k3s inside them).
 
 - Prerequisites: [Vagrant](https://developer.hashicorp.com/vagrant/install) and Docker (no VirtualBox). Linux hosts work best; privileged/systemd containers can be less reliable on Docker Desktop (Windows/macOS/WSL2).
-- Create the network once: `docker network create cda-vagrant`
-- Build/place `images/chat-server.tar` as above if you want the chat pod to preload the local image.
-- Start the cluster:
+- Run from a shell with `bash`, `docker`, and `vagrant` available (Linux/macOS, or Git Bash/WSL on Windows).
 
-  ```bash
-  VAGRANT_VAGRANTFILE=Vagrantfile.docker vagrant up --provider=docker
-  ```
+**Start (full setup):**
 
-- Teardown: `vagrant --vagrantfile=Vagrantfile.docker destroy -f` (and remove the network with `docker network rm cda-vagrant` if desired).
+```bash
+bash scripts/vagrant-docker-up.sh
+```
+
+This builds the chat image and saves `images/chat-server.tar`, ensures the `cda-vagrant` Docker network exists, and runs `vagrant --vagrantfile=Vagrantfile.docker up --provider=docker`.
+
+**Teardown:**
+
+```bash
+bash scripts/vagrant-docker-down.sh
+```
+
+This destroys the Vagrant machines and removes the `cda-vagrant` Docker network (set `REMOVE_NETWORK=0` to keep it).
+
+Manual equivalent:
+
+```bash
+docker network create cda-vagrant   # once
+mkdir -p images && docker build -t chat-server:latest src/chat-server && docker save -o images/chat-server.tar chat-server:latest
+vagrant --vagrantfile=Vagrantfile.docker up --provider=docker
+
+# teardown
+vagrant --vagrantfile=Vagrantfile.docker destroy -f
+docker network rm cda-vagrant
+```
 
 This is less battle-tested than the VirtualBox or k3d setups; for a simpler Docker-based Kubernetes workflow, prefer the **k3d** option above.
 
