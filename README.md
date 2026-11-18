@@ -164,6 +164,23 @@ This option creates separate VMs (1 master + 4 workers) with k3s. Prerequisites:
 
 Useful: `vagrant ssh k3s-master -c "sudo k3s kubectl get pods -o wide"`.
 
+### Alternative: Vagrant with Docker provider (experimental)
+
+`Vagrantfile.docker` is an experimental alternative that uses **Docker containers** as Vagrant "machines" instead of VirtualBox VMs (and provisions k3s inside them).
+
+- Prerequisites: [Vagrant](https://developer.hashicorp.com/vagrant/install) and Docker (no VirtualBox). Linux hosts work best; privileged/systemd containers can be less reliable on Docker Desktop (Windows/macOS/WSL2).
+- Create the network once: `docker network create cda-vagrant`
+- Build/place `images/chat-server.tar` as above if you want the chat pod to preload the local image.
+- Start the cluster:
+
+  ```bash
+  vagrant --vagrantfile=Vagrantfile.docker up --provider=docker
+  ```
+
+- Teardown: `vagrant --vagrantfile=Vagrantfile.docker destroy -f` (and remove the network with `docker network rm cda-vagrant` if desired).
+
+This is less battle-tested than the VirtualBox or k3d setups; for a simpler Docker-based Kubernetes workflow, prefer the **k3d** option above.
+
 ## Local development (without Kubernetes)
 
 Requires Node.js 20+, MariaDB, and NATS (chat starts without NATS, but cross-replica realtime/readiness needs it).
