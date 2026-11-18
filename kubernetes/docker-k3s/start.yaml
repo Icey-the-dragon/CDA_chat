@@ -1,0 +1,32 @@
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: demo
+
+servers: 1
+agents: 4
+
+ports:
+  # Publica el puerto 30080 del nodo de entrada como localhost:8080
+  - port: 8080:30080
+    nodeFilters:
+      - loadbalancer
+
+options:
+  k3s:
+    nodeLabels:
+      - label: role=control-plane
+        nodeFilters:
+          - server:*
+      - label: role=grafana
+        nodeFilters:
+          - agent:0
+      - label: role=db
+        nodeFilters:
+          - agent:1
+      - label: role=chat
+        nodeFilters:
+          - agent:2
+      - label: role=nginx
+        nodeFilters:
+          - agent:3

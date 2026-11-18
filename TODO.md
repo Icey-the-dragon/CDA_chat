@@ -2,7 +2,7 @@ render de pagina es raro
 
 mejorar legibilidad del código
 
-probar framework para app
+probar framework para app como shadcn + react
 
 arreglar:todas las conexiones / mensajes se mandan a 1 de los pods creados
 
