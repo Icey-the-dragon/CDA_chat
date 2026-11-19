@@ -186,6 +186,44 @@ rápido. No ejecutar ambas a la vez: los puertos y nombres podrían solaparse.
 `K8S_MINOR` solo afecta a la variante VirtualBox; en Docker la versión va
 horneada en la imagen (`ARG K8S_MINOR=1.36`).
 
+### 4.2 Sin Vagrant instalado: Vagrant dentro de un contenedor
+
+Sí, se puede. El PC solo necesita **Docker**. La idea no es que Vagrant corra
+los nodos *dentro* de su contenedor, sino que el contenedor controlador tenga
+Vagrant + Docker CLI y hable con el **Docker Engine del host** mediante
+`/var/run/docker.sock` (Docker-outside-of-Docker). Los 5 nodos se crean como
+**hermanos** del contenedor controlador en el daemon del host:
+
+```
+Host (solo Docker)
+ ├── Docker Engine
+ ├── (efímero) cda-vagrant-controller  → Vagrant + Docker CLI
+ │      y habla por /var/run/docker.sock
+ └── 5 contenedores nodo (quedan vivos cuando el controlador sale)
+```
+
+```bash
+bash scripts/kubeadm-in-docker.sh                    # construye el controlador y corre kubeadm-up-docker.sh
+bash scripts/kubeadm-verify-in-docker.sh             # verification desde el controlador
+bash scripts/kubeadm-controlplane-failure-in-docker.sh  # fallo del control-plane (opcional)
+bash scripts/kubeadm-down-in-docker.sh               # teardown
+```
+
+Para la prueba de fallo del control-plane, el wrapper usa
+`HEALTH_URL=http://kubeadm-docker-worker-nginx:30080/api/health`: desde el
+contenedor controlador, `localhost:18080` no es el puerto publicado en el host.
+
+Detalle clave: cuando Vagrant corre dentro del contenedor, `Dir.pwd` es una
+ruta del contenedor que el daemon del host no puede ver. Por eso
+`Vagrantfile.kubeadm.docker` acepta `NODE_VOLUME_SOURCE`, que el wrapper fija a
+la ruta real del repo en el host; así los nodos montan `/vagrant` desde la
+ruta correcta.
+
+También es posible prescindir de Vagrant por completo y crear los 5 contenedores
+con `docker run`/`docker compose` + `docker exec`, pero los scripts actuales
+ya usan Vagrant como capa de provisionamiento y la opción de arriba evita
+duplicar esa lógica.
+
 ## 5. Escalabilidad y tolerancia a fallos
 
 ### 5.1 Escalabilidad

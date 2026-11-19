@@ -47,10 +47,11 @@ fi
 
 echo
 echo "==> Workloads keep running without the control plane"
-if curl -fsS --max-time 5 http://localhost:18080/api/health >/dev/null 2>&1; then
-  pass "chat application still serves traffic (http://localhost:18080/api/health)"
+HEALTH_URL="${HEALTH_URL:-http://localhost:18080/api/health}"
+if curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; then
+  pass "chat application still serves traffic (${HEALTH_URL})"
 else
-  fail "chat application did not answer on port 18080"
+  fail "chat application did not answer at ${HEALTH_URL}"
 fi
 
 echo

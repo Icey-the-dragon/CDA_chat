@@ -225,6 +225,16 @@ bash scripts/kubeadm-verify-docker.sh
 bash scripts/kubeadm-down-docker.sh
 ```
 
+No Vagrant installed on the PC? Run Vagrant from a controller container
+(the host only needs Docker):
+
+```bash
+bash scripts/kubeadm-in-docker.sh
+bash scripts/kubeadm-verify-in-docker.sh
+bash scripts/kubeadm-controlplane-failure-in-docker.sh  # optional
+bash scripts/kubeadm-down-in-docker.sh
+```
+
 Chat UI: <http://localhost:18080/> · kubeconfig: `/etc/kubernetes/admin.conf` inside `kubeadm-controlplane`
 (e.g. `vagrant ssh kubeadm-controlplane -c 'sudo kubectl get nodes -o wide'`).
 Full architecture, requirement mapping, scaling, fault-tolerance analysis and
