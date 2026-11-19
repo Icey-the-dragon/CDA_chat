@@ -17,4 +17,7 @@ docker run --rm -i \
   "$IMAGE" \
   bash -lc 'bash scripts/kubeadm-down-docker.sh'
 
+# The controller is not attached to the lab network, so it can remove it.
+docker network rm cda-kubeadm >/dev/null 2>&1 || true
+
 echo "kubeadm lab removed. k3d/k3s setups were not changed."

@@ -23,7 +23,9 @@ the host Docker daemon through `/var/run/docker.sock`. The five cluster nodes
 are created as sibling containers and keep running after the controller exits.
 
 **Prerequisite:** Docker. Nothing else — no Vagrant, no VirtualBox, no host
-`kubectl`.
+`kubectl`. Your user must be able to talk to the Docker daemon (be in the
+`docker` group or use `sudo`); because the scripts mount `/var/run/docker.sock`
+and run `--privileged` containers, this is effectively root-level access.
 
 ```bash
 bash scripts/kubeadm-in-docker.sh                       # build controller + start lab
@@ -43,8 +45,22 @@ What the scripts do:
 1. Build `cda-vagrant-controller` (Vagrant + Docker CLI + SSH client).
 2. Build `cda-kubeadm-node` (Debian + containerd + kubelet/kubeadm/kubectl, with
    `KUBELET_EXTRA_ARGS=--fail-swap-on=false`). `K8S_MINOR` is a build arg.
-3. Start 5 containers on Docker's default `bridge` network:
-   `kubeadm-docker-controlplane` + 4 workers.
+3. Create the isolated network `cda-kubeadm` (`172.28.0.0/16`).
+4. Start 5 containers with static IPs on that LAN — no default `bridge`:
+
+   | Node | IP |
+   | --- | --- |
+   | controlplane | `172.28.0.10` |
+   | grafana | `172.28.0.11` |
+   | db | `172.28.0.12` |
+   | chat | `172.28.0.13` |
+   | nginx | `172.28.0.14` |
+
+   The controller container itself is `172.28.0.2`. Vagrant SSH is forced to
+   use these LAN IPs instead of a host port; the only published SSH bindings
+   are loopback-only (`127.0.0.1:2201-2205`) and exist solely because Vagrant's
+   Docker provider needs one to report SSH info.
+
 5. Run `kubeadm init` / `kubeadm join`, install Flannel, apply the app manifests.
 6. Keep Vagrant state in `.vagrant-kubeadm-docker/` and generated join data in
    `.kubeadm/` (both git-ignored).
@@ -66,13 +82,12 @@ Because host swap cannot be disabled from a container, kubeadm is invoked with
 why the Docker variant works on machines with swap enabled.
 
 If an older run reports `kubeadm-docker-controlplane: Warning: Connection
-refused`, its containers were created on the custom `cda-kubeadm` network.
-Vagrant's Docker provider can only find the SSH address on Docker's default
-`bridge`. Recreate them:
+refused`, it left containers on the default `bridge`. Recreate them on the
+isolated network:
 
 ```bash
 bash scripts/kubeadm-down-in-docker.sh
-docker network rm cda-kubeadm 2>/dev/null || true   # leftover from older runs
+docker network rm cda-kubeadm 2>/dev/null || true
 bash scripts/kubeadm-in-docker.sh
 ```
 
@@ -85,6 +100,19 @@ Evidence from the checks is written to `docs/evidence/*.txt`.
 | Docker only | `bash scripts/kubeadm-in-docker.sh` | Docker via controller container (**recommended**) |
 | Vagrant + Docker | `bash scripts/kubeadm-up-docker.sh` | Docker directly |
 | Vagrant + VirtualBox | `bash scripts/kubeadm-up.sh` | Debian bookworm VMs (`192.168.56.20-24`) |
+
+Privileges on the host, per variant:
+
+- **Vagrant + VirtualBox:** no root. Run as a normal user in the `vboxusers`
+  group (the VirtualBox install loads the kernel modules).
+- **Vagrant + Docker:** Vagrant itself does not need root, but your user must be
+  in the `docker` group (or have passwordless `sudo docker`) because Vagrant and
+  the script call the Docker CLI / talk to `/var/run/docker.sock`. That is
+  effectively root-level access, but **do not** run these scripts with `sudo`:
+  Vagrant/VirtualBox refuse to run as root and root-owned Vagrant state and
+  evidence files would be created.
+- **Docker only (controller container):** same Docker access requirement; no
+  Vagrant needed on the host.
 
 The `kubeadm-verify.sh` and `kubeadm-controlplane-failure.sh` scripts are shared
 by all three variants. Select the Docker lab with `KUBEADM_DOCKER=1` (the

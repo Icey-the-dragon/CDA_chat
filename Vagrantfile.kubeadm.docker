@@ -1,51 +1,61 @@
-# Experimental faster variant of the kubeadm lab using Vagrant's Docker provider.
+# kubeadm lab using Vagrant's Docker provider on an ISOLATED user-defined network.
 #
-# Instead of 5 VirtualBox VMs, this runs 5 privileged Docker containers with
-# systemd. Startup is much faster (no VM boot, packages baked into the image),
-# but it is less isolated and more host-dependent than VirtualBox. Linux hosts
-# work best; Docker Desktop on Windows/macOS may need tweaking.
+# The 5 nodes get static IPs in 172.28.0.0/16 and are NOT attached to Docker's
+# default bridge, so they behave like real machines on their own LAN.
+#
+# Vagrant's Docker provider normally reads NetworkSettings.IPAddress to find
+# SSH, but that field is empty on custom networks. Two things make it work:
+#   1. each node publishes 22 on 127.0.0.1 only, so the provider has ssh_info;
+#   2. config.ssh.host/port override that with the node's static LAN IP.
+# The controller container also lives on the LAN (172.28.0.2) and reaches the
+# nodes directly; no host port is needed for SSH.
 #
 # Usage:
 #   bash scripts/kubeadm-up-docker.sh
 #   KUBEADM_DOCKER=1 bash scripts/kubeadm-verify.sh
 #   bash scripts/kubeadm-down-docker.sh
 Vagrant.configure("2") do |config|
-  # Use Docker's DEFAULT bridge, not a user-defined network: Vagrant's Docker
-  # provider reads NetworkSettings.IPAddress to find the SSH address, and that
-  # field is only populated on the default bridge. On a custom network it is
-  # empty and Vagrant falls back to 127.0.0.1:2222 -> "Connection refused".
+  NETWORK = "cda-kubeadm"
+
   config.ssh.username = "root"
   config.ssh.password = "vagrant"
   config.ssh.insert_key = false
 
-  # The project directory is bind-mounted at /vagrant by the provider.
+  # Vagrant adds a default 127.0.0.1:2222 -> 22 mapping when has_ssh is true.
+  # Disable it: our per-node loopback publish below is enough for ssh_info.
+  config.vm.network "forwarded_port", id: "ssh", guest: 22, host: 2222, disabled: true
+
+  # The repo is bind-mounted from the real host path (NODE_VOLUME_SOURCE).
   config.vm.synced_folder ".", "/vagrant", disabled: true
 
+  base_create_args = [
+    "--cgroupns=host",
+    "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
+    "--tmpfs", "/run:exec,mode=755",
+    "--tmpfs", "/run/lock:exec,mode=1777",
+    "--tmpfs", "/tmp:exec,mode=1777",
+    "--network", NETWORK,
+  ]
+
   config.vm.provider "docker" do |d|
-    # Built by scripts/kubeadm-up-docker.sh so rebuilds are explicit and
-    # K8S_MINOR can be passed as a build arg.
+    # Built by scripts/kubeadm-up-docker.sh so K8S_MINOR is a build arg.
     d.image = ENV.fetch("KUBEADM_NODE_IMAGE", "cda-kubeadm-node")
     d.remains_running = true
     d.has_ssh = true
     d.privileged = true
-    d.create_args = [
-      "--cgroupns=host",
-      "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
-      "--tmpfs", "/run:exec,mode=755",
-      "--tmpfs", "/run/lock:exec,mode=1777",
-      "--tmpfs", "/tmp:exec,mode=1777",
-    ]
-    # When Vagrant itself runs inside a controller container, Dir.pwd is a
-    # container path that the host Docker daemon cannot see. NODE_VOLUME_SOURCE
-    # lets the caller pass the real host path instead.
-    d.volumes = ["#{ENV.fetch('NODE_VOLUME_SOURCE', Dir.pwd)}:/vagrant"]
   end
 
   # ------------------------------------------------------------------ master
   config.vm.define "kubeadm-docker-controlplane" do |cp|
     cp.vm.hostname = "kubeadm-docker-controlplane"
+    cp.ssh.host = "172.28.0.10"
+    cp.ssh.port = 22
     cp.vm.provider "docker" do |d|
       d.name = "kubeadm-docker-controlplane"
+      d.create_args = base_create_args + [
+        "--ip", "172.28.0.10",
+        "-p", "127.0.0.1:2201:22",
+      ]
     end
     cp.vm.provision "shell", upload_path: "/root/kubeadm-provision.sh", inline: <<-SHELL
       set -e
@@ -71,11 +81,13 @@ Vagrant.configure("2") do |config|
 
   # ----------------------------------------------------------------- workers
   nodes = {
-    "kubeadm-docker-worker-grafana" => { role: "grafana" },
-    "kubeadm-docker-worker-db"      => { role: "db" },
-    "kubeadm-docker-worker-chat"    => { role: "chat", chat_image: true },
-    "kubeadm-docker-worker-nginx"   => { role: "nginx", chat_image: true,
-                                          host_port: 18080, container_port: 30080 }
+    "kubeadm-docker-worker-grafana" => { ip: "172.28.0.11", ssh: 2202, role: "grafana" },
+    "kubeadm-docker-worker-db"      => { ip: "172.28.0.12", ssh: 2203, role: "db" },
+    "kubeadm-docker-worker-chat"    => { ip: "172.28.0.13", ssh: 2204, role: "chat",
+                                         chat_image: true },
+    "kubeadm-docker-worker-nginx"   => { ip: "172.28.0.14", ssh: 2205, role: "nginx",
+                                         chat_image: true,
+                                         host_port: 18080, container_port: 30080 },
   }
 
   nodes.each do |name, info|
@@ -101,11 +113,15 @@ Vagrant.configure("2") do |config|
 
     config.vm.define name do |node|
       node.vm.hostname = name
+      node.ssh.host = info[:ip]
+      node.ssh.port = 22
       node.vm.provider "docker" do |d|
         d.name = name
+        args = base_create_args + ["--ip", info[:ip], "-p", "127.0.0.1:#{info[:ssh]}:22"]
         if info[:host_port] && info[:container_port]
           d.ports = ["#{info[:host_port]}:#{info[:container_port]}"]
         end
+        d.create_args = args
       end
       node.vm.provision "shell", upload_path: "/root/kubeadm-provision.sh", inline: worker_provision
     end

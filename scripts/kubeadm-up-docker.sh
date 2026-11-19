@@ -38,6 +38,10 @@ kube() {
   vagrant ssh "$CP" -c "$cmd"
 }
 
+echo "==> Ensuring isolated network 'cda-kubeadm' (172.28.0.0/16) exists..."
+docker network inspect cda-kubeadm >/dev/null 2>&1 || \
+  docker network create --subnet 172.28.0.0/16 cda-kubeadm
+
 echo "==> Building node image ${KUBEADM_NODE_IMAGE} (K8s v${K8S_MINOR})..."
 docker build \
   --build-arg "K8S_MINOR=${K8S_MINOR}" \
