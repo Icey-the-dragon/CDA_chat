@@ -10,7 +10,11 @@
 #   bash scripts/kubeadm-verify.sh
 #   bash scripts/kubeadm-down.sh
 Vagrant.configure("2") do |config|
-  config.vm.box = "ubuntu/jammy64"
+  # Debian bookworm is noticeably smaller/lighter than ubuntu/jammy64 and is
+  # fully supported by the Kubernetes apt repo and containerd.
+  # (Alpine is not used: kubeadm's deb packages and systemd cgroup assumptions
+  # do not fit Alpine/OpenRC.)
+  config.vm.box = "debian/bookworm64"
 
   # Allow overriding the Kubernetes minor version, e.g. K8S_MINOR=1.35.
   k8s_minor = ENV.fetch("K8S_MINOR", "1.36")
@@ -54,7 +58,7 @@ EOF
 
     echo "==> [kubeadm] Installing containerd..."
     apt-get update
-    apt-get install -y containerd apt-transport-https ca-certificates curl gpg
+    apt-get install -y containerd apt-transport-https ca-certificates curl gpg kmod
     mkdir -p /etc/containerd
     containerd config default > /etc/containerd/config.toml
     sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
@@ -98,7 +102,7 @@ EOF
     cp.vm.hostname = "kubeadm-controlplane"
     cp.vm.network "private_network", ip: "192.168.56.20"
     cp.vm.provider "virtualbox" do |vb|
-      vb.memory = "2048"
+      vb.memory = "1536"
       vb.cpus = 2
     end
     cp.vm.provision "shell", upload_path: "/home/vagrant/kubeadm-common.sh", inline: master_provision
@@ -108,10 +112,10 @@ EOF
   # `workload=chat` is added by scripts/kubeadm-up.sh to the chat and nginx
   # workers so chat pods can be rescheduled if one of them fails.
   nodes = {
-    "kubeadm-worker-grafana" => { ip: "192.168.56.21", role: "grafana", memory: "1024", cpus: 1 },
-    "kubeadm-worker-db"      => { ip: "192.168.56.22", role: "db",      memory: "1536", cpus: 1 },
+    "kubeadm-worker-grafana" => { ip: "192.168.56.21", role: "grafana", memory: "768",  cpus: 1 },
+    "kubeadm-worker-db"      => { ip: "192.168.56.22", role: "db",      memory: "1024", cpus: 1 },
     "kubeadm-worker-chat"    => { ip: "192.168.56.23", role: "chat",    memory: "1536", cpus: 2, chat_image: true },
-    "kubeadm-worker-nginx"   => { ip: "192.168.56.24", role: "nginx",   memory: "1024", cpus: 1, chat_image: true,
+    "kubeadm-worker-nginx"   => { ip: "192.168.56.24", role: "nginx",   memory: "768",  cpus: 1, chat_image: true,
                                   forward_port: 18080 }
   }
 

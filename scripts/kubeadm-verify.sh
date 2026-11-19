@@ -10,20 +10,25 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-export VAGRANT_VAGRANTFILE="$ROOT_DIR/Vagrantfile.kubeadm"
-export VAGRANT_DOTFILE_PATH="$ROOT_DIR/.vagrant-kubeadm"
+export VAGRANT_VAGRANTFILE="${VAGRANT_VAGRANTFILE:-$ROOT_DIR/Vagrantfile.kubeadm}"
+export VAGRANT_DOTFILE_PATH="${VAGRANT_DOTFILE_PATH:-$ROOT_DIR/.vagrant-kubeadm}"
 
-CP="kubeadm-controlplane"
+# Default names match the VirtualBox lab. The Docker variant sets
+# KUBEADM_PREFIX=kubeadm-docker (see scripts/kubeadm-verify-docker.sh).
+PREFIX="${KUBEADM_PREFIX:-kubeadm}"
+CP="${PREFIX}-controlplane"
+CHAT_WORKER="${PREFIX}-worker-chat"
+NGINX_WORKER="${PREFIX}-worker-nginx"
 LOG_DIR="$ROOT_DIR/docs/evidence"
 mkdir -p "$LOG_DIR"
 exec > >(tee "$LOG_DIR/kubeadm-verify.txt") 2>&1
 
 ALL_NODES=(
-  kubeadm-controlplane
-  kubeadm-worker-grafana
-  kubeadm-worker-db
-  kubeadm-worker-chat
-  kubeadm-worker-nginx
+  "$CP"
+  "${PREFIX}-worker-grafana"
+  "${PREFIX}-worker-db"
+  "$CHAT_WORKER"
+  "$NGINX_WORKER"
 )
 FAILED=0
 
@@ -140,19 +145,19 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 pod_on_chat="$(kube get pods -l app=chat-server -o wide --no-headers \
-  | awk '$7 ~ /kubeadm-worker-chat/ {print $1}' | head -n1)"
+  | awk -v node="$CHAT_WORKER" '$7 ~ node {print $1}' | head -n1)"
 
-vagrant ssh kubeadm-worker-chat -c 'sudo systemctl stop kubelet' >/dev/null 2>&1 \
-  || fail "could not stop kubelet on kubeadm-worker-chat"
+vagrant ssh "$CHAT_WORKER" -c 'sudo systemctl stop kubelet' >/dev/null 2>&1 \
+  || fail "could not stop kubelet on $CHAT_WORKER"
 for _ in $(seq 1 30); do
-  kube get node kubeadm-worker-chat 2>/dev/null | grep -q 'NotReady' && break
+  kube get node "$CHAT_WORKER" 2>/dev/null | grep -q 'NotReady' && break
   sleep 5
 done
-kube get node kubeadm-worker-chat
-if kube get node kubeadm-worker-chat 2>/dev/null | grep -q 'NotReady'; then
-  pass "kubeadm-worker-chat became NotReady"
+kube get node "$CHAT_WORKER"
+if kube get node "$CHAT_WORKER" 2>/dev/null | grep -q 'NotReady'; then
+  pass "$CHAT_WORKER became NotReady"
 else
-  fail "kubeadm-worker-chat did not become NotReady"
+  fail "$CHAT_WORKER did not become NotReady"
 fi
 
 # Accelerate eviction instead of waiting for the default 5-minute taint timeout.
@@ -162,21 +167,21 @@ fi
 rescheduled=0
 for _ in $(seq 1 30); do
   rescheduled="$(kube get pods -l app=chat-server -o wide --no-headers \
-    | awk '$3 == "Running" && $7 ~ /kubeadm-worker-nginx/ {n++} END {print n+0}')"
+    | awk -v node="$NGINX_WORKER" '$3 == "Running" && $7 ~ node {n++} END {print n+0}')"
   [ "${rescheduled:-0}" -ge 2 ] && break
   sleep 3
 done
 kube get pods -l app=chat-server -o wide
 if [ "${rescheduled:-0}" -ge 2 ]; then
-  pass "chat pods rescheduled onto the other chat-capable worker"
+  pass "chat pods rescheduled onto $NGINX_WORKER"
 else
   fail "chat pods were not rescheduled onto a healthy worker"
 fi
 
-vagrant ssh kubeadm-worker-chat -c 'sudo systemctl start kubelet' >/dev/null 2>&1 \
-  || fail "could not restart kubelet on kubeadm-worker-chat"
-kube wait --for=condition=Ready node/kubeadm-worker-chat --timeout=180s >/dev/null \
-  || fail "kubeadm-worker-chat did not return to Ready"
+vagrant ssh "$CHAT_WORKER" -c 'sudo systemctl start kubelet' >/dev/null 2>&1 \
+  || fail "could not restart kubelet on $CHAT_WORKER"
+kube wait --for=condition=Ready "node/$CHAT_WORKER" --timeout=180s >/dev/null \
+  || fail "$CHAT_WORKER did not return to Ready"
 kube patch hpa chat-server --type=json \
   -p '[{"op":"replace","path":"/spec/minReplicas","value":1}]' >/dev/null
 

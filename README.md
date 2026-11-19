@@ -207,7 +207,8 @@ This is less battle-tested than the VirtualBox or k3d setups; for a simpler Dock
 A parallel lab that uses **kubeadm** instead of k3s, with swap disabled,
 containerd and Flannel CNI. It does not change the k3d/k3s setups: it uses
 192.168.56.20-24, host port 18080 and a separate Vagrant state directory.
-The host only needs Vagrant + Docker: `kubectl` runs inside the control-plane VM.
+The default box is the lighter **Debian bookworm**. The host only needs Vagrant
++ Docker: `kubectl` runs inside the control-plane VM.
 
 ```bash
 bash scripts/kubeadm-up.sh                 # kubeadm init + join + Flannel + app manifests
@@ -216,9 +217,18 @@ bash scripts/kubeadm-controlplane-failure.sh  # optional: stop the control plane
 bash scripts/kubeadm-down.sh               # destroys only this lab
 ```
 
+Faster experimental variant (Docker provider instead of VirtualBox):
+
+```bash
+bash scripts/kubeadm-up-docker.sh
+bash scripts/kubeadm-verify-docker.sh
+bash scripts/kubeadm-down-docker.sh
+```
+
 Chat UI: <http://localhost:18080/> · kubeconfig: `/etc/kubernetes/admin.conf` inside `kubeadm-controlplane`
 (e.g. `vagrant ssh kubeadm-controlplane -c 'sudo kubectl get nodes -o wide'`).
-Full architecture, requirement mapping, scaling and fault-tolerance analysis:
+Full architecture, requirement mapping, scaling, fault-tolerance analysis and
+VirtualBox-vs-Docker comparison:
 [`docs/KUBEADM_LAB.md`](docs/KUBEADM_LAB.md).
 
 ## Local development (without Kubernetes)

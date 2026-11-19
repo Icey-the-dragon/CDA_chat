@@ -1,6 +1,7 @@
 kubeconfig.yaml
 .vagrant
 .vagrant-kubeadm/
+.vagrant-kubeadm-docker/
 .kubeadm/
 node_modules/
 .env

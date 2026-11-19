@@ -1,0 +1,107 @@
+# Experimental faster variant of the kubeadm lab using Vagrant's Docker provider.
+#
+# Instead of 5 VirtualBox VMs, this runs 5 privileged Docker containers with
+# systemd. Startup is much faster (no VM boot, packages baked into the image),
+# but it is less isolated and more host-dependent than VirtualBox. Linux hosts
+# work best; Docker Desktop on Windows/macOS may need tweaking.
+#
+# Usage:
+#   bash scripts/kubeadm-up-docker.sh
+#   bash scripts/kubeadm-verify-docker.sh
+#   bash scripts/kubeadm-down-docker.sh
+Vagrant.configure("2") do |config|
+  DOCKER_NETWORK = "cda-kubeadm"
+
+  config.ssh.username = "root"
+  config.ssh.password = "vagrant"
+  config.ssh.insert_key = false
+
+  # The project directory is bind-mounted at /vagrant by the provider.
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  config.vm.provider "docker" do |d|
+    d.build_dir = "docker/kubeadm-node"
+    d.remains_running = true
+    d.has_ssh = true
+    d.privileged = true
+    d.create_args = [
+      "--cgroupns=host",
+      "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
+      "--tmpfs", "/run:exec,mode=755",
+      "--tmpfs", "/run/lock:exec,mode=1777",
+      "--tmpfs", "/tmp:exec,mode=1777",
+      "--network", DOCKER_NETWORK,
+    ]
+    d.volumes = ["#{Dir.pwd}:/vagrant"]
+  end
+
+  # ------------------------------------------------------------------ master
+  config.vm.define "kubeadm-docker-controlplane" do |cp|
+    cp.vm.hostname = "kubeadm-docker-controlplane"
+    cp.vm.provider "docker" do |d|
+      d.name = "kubeadm-docker-controlplane"
+    end
+    cp.vm.provision "shell", upload_path: "/root/kubeadm-provision.sh", inline: <<-SHELL
+      set -e
+      IP="$(hostname -i | awk '{print $1}')"
+
+      if [ ! -f /etc/kubernetes/admin.conf ]; then
+        echo "==> [kubeadm/docker] Running kubeadm init on ${IP}..."
+        kubeadm init \\
+          --apiserver-advertise-address="${IP}" \\
+          --pod-network-cidr=10.244.0.0/16 \\
+          --ignore-preflight-errors=Swap
+      else
+        echo "==> [kubeadm/docker] Control plane already initialized; skipping init."
+      fi
+
+      mkdir -p /root/.kube
+      cp -f /etc/kubernetes/admin.conf /root/.kube/config
+
+      echo "==> [kubeadm/docker] Installing Flannel CNI..."
+      kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+    SHELL
+  end
+
+  # ----------------------------------------------------------------- workers
+  nodes = {
+    "kubeadm-docker-worker-grafana" => { role: "grafana" },
+    "kubeadm-docker-worker-db"      => { role: "db" },
+    "kubeadm-docker-worker-chat"    => { role: "chat", chat_image: true },
+    "kubeadm-docker-worker-nginx"   => { role: "nginx", chat_image: true,
+                                          host_port: 18080, container_port: 30080 }
+  }
+
+  nodes.each do |name, info|
+    worker_provision = <<-SHELL
+      set -e
+
+      if [ ! -f /etc/kubernetes/kubelet.conf ]; then
+        if [ ! -f /vagrant/.kubeadm/join.sh ]; then
+          echo "ERROR: /vagrant/.kubeadm/join.sh is missing. Run scripts/kubeadm-up-docker.sh first." >&2
+          exit 1
+        fi
+        echo "==> [kubeadm/docker] Joining control plane..."
+        bash /vagrant/.kubeadm/join.sh
+      else
+        echo "==> [kubeadm/docker] Node already joined; skipping join."
+      fi
+
+      if [ "#{info.fetch(:chat_image, false)}" = "true" ] && [ -f /vagrant/images/chat-server.tar ]; then
+        echo "==> [kubeadm/docker] Importing chat-server image into containerd..."
+        ctr -n k8s.io images import /vagrant/images/chat-server.tar
+      fi
+    SHELL
+
+    config.vm.define name do |node|
+      node.vm.hostname = name
+      node.vm.provider "docker" do |d|
+        d.name = name
+        if info[:host_port] && info[:container_port]
+          d.ports = ["#{info[:host_port]}:#{info[:container_port]}"]
+        end
+      end
+      node.vm.provision "shell", upload_path: "/root/kubeadm-provision.sh", inline: worker_provision
+    end
+  end
+end

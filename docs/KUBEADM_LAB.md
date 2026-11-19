@@ -107,6 +107,11 @@ Prerrequisitos en el host: Vagrant + VirtualBox, Docker y conexión a Internet
 `kubectl` en el host**: todos los comandos `kubectl` se ejecutan dentro del
 control-plane mediante `vagrant ssh kubeadm-controlplane -c 'sudo kubectl ...'`.
 
+El box por defecto es **`debian/bookworm64`** (más ligero que `ubuntu/jammy64`).
+No se usa Alpine: kubeadm se distribuye como paquete `.deb`, espera systemd y
+el driver de cgroups `systemd`, mientras Alpine usa OpenRC y no tiene esos
+paquetes; la combinación es frágil y no aporta una ventaja real aquí.
+
 ```bash
 bash scripts/kubeadm-up.sh          # construye la imagen, inicializa y despliega
 bash scripts/kubeadm-verify.sh      # comprueba swap, CNI, HPA y fallos de pod/worker
@@ -146,6 +151,40 @@ Notas sobre el despliegue de la app:
 - La imagen `chat-server:latest` se importa en los dos workers con `workload=chat`.
 
 ---
+
+## 4.1 Variante rápida con proveedor Docker (experimental)
+
+Si el arranque con VirtualBox es lento, existe una variante que usa el
+**proveedor Docker de Vagrant**: los 5 nodos son contenedores privilegiados con
+systemd en vez de VMs. Las herramientas de Kubernetes ya vienen horneadas en
+`docker/kubeadm-node/Dockerfile`, así que el arranque es mucho más rápido.
+
+```bash
+bash scripts/kubeadm-up-docker.sh
+bash scripts/kubeadm-verify-docker.sh
+bash scripts/kubeadm-controlplane-failure-docker.sh   # opcional
+bash scripts/kubeadm-down-docker.sh
+```
+
+| | VirtualBox (por defecto) | Docker provider (experimental) |
+|---|---|---|
+| Imagen base | `debian/bookworm64` | `debian:bookworm-slim` + paquetes K8s |
+| Arranque | ~30-60 s por VM | ~2-10 s por contenedor (imagen solo se construye la 1ª vez) |
+| RAM aproximada | 5-6 GB | 2-3 GB |
+| Aislamiento | VM completa | contenedor privilegiado (`--privileged`, cgroupns host) |
+| Red | `192.168.56.20-24` | Docker network `cda-kubeadm` |
+| Swap | se desactiva dentro de la VM | no se puede desactivar la del host; se usa `--ignore-preflight-errors=Swap` |
+| Fiabilidad | alta | dependiente del host; Linux funciona mejor que Docker Desktop |
+| Estado Vagrant | `.vagrant-kubeadm/` | `.vagrant-kubeadm-docker/` |
+
+**¿Es más rápido?** Sí, claramente: no hay boot de VM y los paquetes ya están
+en la imagen. **Pero** es menos robusto: kubeadm dentro de contenedores con
+systemd depende de cgroups, montajes y del kernel del host, y hay que ignorar el
+check de swap. Para una entrega donde se evalúa "instalar con kubeadm", la
+variante de VirtualBox es la recomendable; la de Docker sirve para iterar
+rápido. No ejecutar ambas a la vez: los puertos y nombres podrían solaparse.
+`K8S_MINOR` solo afecta a la variante VirtualBox; en Docker la versión va
+horneada en la imagen (`ARG K8S_MINOR=1.36`).
 
 ## 5. Escalabilidad y tolerancia a fallos
 

@@ -10,10 +10,10 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-export VAGRANT_VAGRANTFILE="$ROOT_DIR/Vagrantfile.kubeadm"
-export VAGRANT_DOTFILE_PATH="$ROOT_DIR/.vagrant-kubeadm"
+export VAGRANT_VAGRANTFILE="${VAGRANT_VAGRANTFILE:-$ROOT_DIR/Vagrantfile.kubeadm}"
+export VAGRANT_DOTFILE_PATH="${VAGRANT_DOTFILE_PATH:-$ROOT_DIR/.vagrant-kubeadm}"
 
-CP="kubeadm-controlplane"
+CP="${KUBEADM_PREFIX:-kubeadm}-controlplane"
 LOG_DIR="$ROOT_DIR/docs/evidence"
 mkdir -p "$LOG_DIR"
 exec > >(tee "$LOG_DIR/kubeadm-controlplane-failure.txt") 2>&1
