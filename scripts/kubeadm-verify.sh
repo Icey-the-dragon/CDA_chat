@@ -10,11 +10,20 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# KUBEADM_DOCKER=1 selects the Docker-provider lab without needing a thin
+# wrapper script. Works both on a host with Vagrant and inside the controller
+# container (ROOT_DIR is /workspace there).
+if [[ "${KUBEADM_DOCKER:-0}" == "1" ]]; then
+  export VAGRANT_VAGRANTFILE="${ROOT_DIR}/Vagrantfile.kubeadm.docker"
+  export VAGRANT_DOTFILE_PATH="${VAGRANT_DOTFILE_PATH:-${ROOT_DIR}/.vagrant-kubeadm-docker}"
+  export KUBEADM_PREFIX="kubeadm-docker"
+fi
+
 export VAGRANT_VAGRANTFILE="${VAGRANT_VAGRANTFILE:-$ROOT_DIR/Vagrantfile.kubeadm}"
 export VAGRANT_DOTFILE_PATH="${VAGRANT_DOTFILE_PATH:-$ROOT_DIR/.vagrant-kubeadm}"
 
-# Default names match the VirtualBox lab. The Docker variant sets
-# KUBEADM_PREFIX=kubeadm-docker (see scripts/kubeadm-verify-docker.sh).
+# Default names match the VirtualBox lab; KUBEADM_DOCKER=1 switches them to
+# the Docker node names.
 PREFIX="${KUBEADM_PREFIX:-kubeadm}"
 CP="${PREFIX}-controlplane"
 CHAT_WORKER="${PREFIX}-worker-chat"

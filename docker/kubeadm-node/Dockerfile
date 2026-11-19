@@ -24,6 +24,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml \
   && rm -rf /var/lib/apt/lists/*
 
+# The host's swap cannot be turned off from inside a container. kubeadm's
+# preflight is ignored by the scripts, but kubelet also checks swap at runtime.
+# This drop-in loads after kubeadm's 10-kubeadm.conf and disables that check.
+RUN mkdir -p /etc/systemd/system/kubelet.service.d \
+  && printf '[Service]\nEnvironment="KUBELET_EXTRA_ARGS=--fail-swap-on=false"\n' \
+       > /etc/systemd/system/kubelet.service.d/20-swap.conf
+
 # SSH access for Vagrant (root password is used by the Docker provider).
 RUN mkdir -p /var/run/sshd \
   && sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \

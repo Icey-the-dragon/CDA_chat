@@ -35,6 +35,8 @@ docker run --rm -i \
   -w /workspace \
   -e NODE_VOLUME_SOURCE="$ROOT_DIR" \
   -e VAGRANT_DOTFILE_PATH=/workspace/.vagrant-kubeadm-docker \
+  -e K8S_MINOR="${K8S_MINOR:-1.36}" \
+  -e KUBEADM_NODE_IMAGE="${KUBEADM_NODE_IMAGE:-cda-kubeadm-node}" \
   "$IMAGE" \
   bash -lc 'bash scripts/kubeadm-up-docker.sh'
 

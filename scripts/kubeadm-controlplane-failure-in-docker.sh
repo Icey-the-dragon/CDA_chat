@@ -25,7 +25,7 @@ docker run --rm -i \
   -w /workspace \
   -e NODE_VOLUME_SOURCE="$ROOT_DIR" \
   -e VAGRANT_DOTFILE_PATH=/workspace/.vagrant-kubeadm-docker \
-  -e KUBEADM_PREFIX=kubeadm-docker \
+  -e KUBEADM_DOCKER=1 \
   -e HEALTH_URL="http://${NGINX_CONTAINER}:30080/api/health" \
   "$IMAGE" \
   bash -lc 'bash scripts/kubeadm-controlplane-failure.sh "$@"' _ "$@"

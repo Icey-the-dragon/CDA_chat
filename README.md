@@ -2,11 +2,11 @@
 
 CDA Chat is a small Kubernetes lab: a Node.js chat app (web UI + REST API + WebSocket) backed by MariaDB and NATS, with Prometheus, Grafana, and an nginx edge router.
 
-- **Chat replicas** can scale from 1 to 3 via a CPU-based HPA and share messages/presence through NATS (MariaDB stores history).
+- **Chat replicas** scale from 1 to 3 via a CPU-based HPA and share messages/presence through NATS (MariaDB stores history).
 - **Stateful/edge services** (MariaDB, NATS, Prometheus, Grafana, nginx) stay fixed.
 
 ```
-Browser -> nginx (:80 / host 8080)
+Browser -> nginx (:80 / host 18080 in the kubeadm lab, 8080 in k3d)
              ├─ /           -> chat-server-service:8080 (UI)
              ├─ /api/       -> chat-server-service:8080 (REST)
              ├─ /ws/        -> chat-server-service:8080 (WebSocket)
@@ -15,231 +15,108 @@ Browser -> nginx (:80 / host 8080)
 chat-server replicas -> nats-service:4222 and mariadb-service:3306
 ```
 
+## Quick start: kubeadm lab on Docker (recommended)
+
+The supported way to run the kubeadm lab uses **Docker only**. Vagrant is not
+installed on the host: it lives in a small controller container that talks to
+the host Docker daemon through `/var/run/docker.sock`. The five cluster nodes
+are created as sibling containers and keep running after the controller exits.
+
+**Prerequisite:** Docker. Nothing else — no Vagrant, no VirtualBox, no host
+`kubectl`.
+
+```bash
+bash scripts/kubeadm-in-docker.sh                       # build controller + start lab
+bash scripts/kubeadm-verify-in-docker.sh                # swap/CNI/Ready + HPA + pod/worker failures
+bash scripts/kubeadm-controlplane-failure-in-docker.sh  # optional: stop the control plane
+bash scripts/kubeadm-down-in-docker.sh                  # teardown
+```
+
+| Service | URL |
+| --- | --- |
+| Chat web UI | <http://localhost:18080/> |
+| Grafana | <http://localhost:18080/grafana/> |
+| Chat health | <http://localhost:18080/api/health> |
+
+What the scripts do:
+
+1. Build `cda-vagrant-controller` (Vagrant + Docker CLI + SSH client).
+2. Build `cda-kubeadm-node` (Debian + containerd + kubelet/kubeadm/kubectl, with
+   `KUBELET_EXTRA_ARGS=--fail-swap-on=false`). `K8S_MINOR` is a build arg.
+3. Create the Docker network `cda-kubeadm`.
+4. Start 5 containers: `kubeadm-docker-controlplane` + 4 workers.
+5. Run `kubeadm init` / `kubeadm join`, install Flannel, apply the app manifests.
+6. Keep Vagrant state in `.vagrant-kubeadm-docker/` and generated join data in
+   `.kubeadm/` (both git-ignored).
+
+`kubectl` is only executed inside the control-plane container:
+
+```bash
+vagrant ssh kubeadm-docker-controlplane -c 'sudo kubectl get nodes -o wide'
+```
+
+From the host you can also use Docker directly:
+
+```bash
+docker exec kubeadm-docker-controlplane sudo kubectl get pods -o wide
+```
+
+Because host swap cannot be disabled from a container, kubeadm is invoked with
+`--ignore-preflight-errors=Swap` and kubelet with `--fail-swap-on=false`. That is
+why the Docker variant works on machines with swap enabled.
+
+Evidence from the checks is written to `docs/evidence/*.txt`.
+
+### Other kubeadm entry points
+
+| Host has | Command | Provider |
+| --- | --- | --- |
+| Docker only | `bash scripts/kubeadm-in-docker.sh` | Docker via controller container (**recommended**) |
+| Vagrant + Docker | `bash scripts/kubeadm-up-docker.sh` | Docker directly |
+| Vagrant + VirtualBox | `bash scripts/kubeadm-up.sh` | Debian bookworm VMs (`192.168.56.20-24`) |
+
+The `kubeadm-verify.sh` and `kubeadm-controlplane-failure.sh` scripts are shared
+by all three variants. Select the Docker lab with `KUBEADM_DOCKER=1` (the
+`*-in-docker.sh` wrappers do this for you):
+
+```bash
+KUBEADM_DOCKER=1 bash scripts/kubeadm-verify.sh
+KUBEADM_DOCKER=1 bash scripts/kubeadm-controlplane-failure.sh
+```
+
+Teardown uses `kubeadm-down-in-docker.sh`, `kubeadm-down-docker.sh` or
+`kubeadm-down.sh`, respectively. Full architecture, requirement mapping,
+scaling and failure analysis: [`docs/KUBEADM_LAB.md`](docs/KUBEADM_LAB.md).
+
 ## Repository layout
 
 - `src/chat-server/` – Node.js server (`server.js`, `lib/`, `public/`, `Dockerfile`, `loadgen.js`)
 - `kubernetes/cluster-manifests.yaml` – app/infra manifests (DB init, MariaDB, chat, NATS, Prometheus, Grafana, nginx, HPA, etc.)
 - `kubernetes/nginx-configmap.yaml` / `nginx/default.conf` – nginx config
 - `kubernetes/demo/load-generator.yaml` – optional HPA load Job
-- `k3d-cluster.yaml`, `scripts/` – local Docker-based Kubernetes (k3d) setup
-- `Vagrantfile` – multi-VM k3s lab (VirtualBox) setup
-- `Vagrantfile.kubeadm`, `scripts/kubeadm-*.sh`, `docs/KUBEADM_LAB.md` – parallel kubeadm lab (1 control-plane + 4 workers) with scalability/failure analysis
+- `docker/kubeadm-node/Dockerfile` – kubeadm node image (Debian + K8s tools)
+- `docker/vagrant-controller/Dockerfile` – Vagrant controller image for Docker-only hosts
+- `Vagrantfile.kubeadm.docker` – 1 control-plane + 4 workers as Docker containers
+- `Vagrantfile.kubeadm` – same topology as VirtualBox VMs (Debian bookworm)
+- `scripts/kubeadm-*.sh` – start / verify / failure tests / teardown
+- `docs/KUBEADM_LAB.md` – architecture and analysis
+- `k3d-cluster.yaml`, `Vagrantfile`, `Vagrantfile.docker` – original k3d/k3s labs (below)
 
-## Run with Docker + k3d (recommended)
+## Original labs (k3d / k3s)
 
-Runs the lab as a local multi-node **Kubernetes (k3s) cluster in Docker** using [k3d](https://k3d.io/) — no VirtualBox VMs, but still managed by Kubernetes (`kubectl`, Deployments/Services/PVCs/HPA) with the same manifests.
+These are still available, but the kubeadm lab above is the one used for the
+installation and fault-tolerance requirements.
 
-### Prerequisites
+| Lab | Start | Teardown | Host port |
+| --- | --- | --- | --- |
+| k3d (k3s in Docker) | `bash scripts/k3d-up.sh` | `bash scripts/k3d-down.sh` | 8080 |
+| Vagrant + VirtualBox (k3s) | `vagrant up` | `vagrant destroy -f` | 8080 |
+| Vagrant + Docker (k3s) | `bash scripts/vagrant-docker-up.sh` | `bash scripts/vagrant-docker-down.sh` | 8080 |
 
-- [Docker](https://docs.docker.com/get-docker/) running (Docker Desktop on Windows/macOS; Engine on Linux)
-- [k3d](https://k3d.io/#installation)
-- [kubectl](https://kubernetes.io/docs/tasks/tools/)
-
-**Windows:** install Docker Desktop (WSL2 backend recommended), then install tools, for example:
-
-```powershell
-winget install k3d.k3d
-winget install Kubernetes.kubectl
-```
-
-(or use Chocolatey/Scoop/binaries). You can run the helper script from **Git Bash** or **WSL**, or use the PowerShell steps below.
-
-### Start the cluster
-
-#### Linux / macOS / Windows (Git Bash or WSL)
-
-From the repository root:
-
-```bash
-bash scripts/k3d-up.sh
-```
-
-This builds the chat image, creates a 5-node cluster (`cda-chat`, context `k3d-cda-chat`) with role labels matching the manifests, imports the image, and applies `kubernetes/`.
-
-#### Windows (PowerShell, manual)
-
-```powershell
-# From the repository root
-docker build -t chat-server:latest src/chat-server
-k3d cluster create --config kubernetes/docker-k3s/k3d-cluster.yaml
-kubectl --context k3d-cda-chat wait --for=condition=Ready nodes --all --timeout=180s
-
-# Label nodes to match manifest nodeSelectors
-$server = (kubectl --context k3d-cda-chat get nodes -o name | Where-Object { $_ -match '-server-' } | Select-Object -First 1) -replace '^node/',''
-$agents = kubectl --context k3d-cda-chat get nodes -o name | Where-Object { $_ -match '-agent-' } | ForEach-Object { $_ -replace '^node/','' } | Sort-Object
-
-kubectl --context k3d-cda-chat label node $server role=control-plane --overwrite
-kubectl --context k3d-cda-chat taint node $server node-role.kubernetes.io/control-plane:NoSchedule- 2>$null
-kubectl --context k3d-cda-chat taint node $server node-role.kubernetes.io/master:NoSchedule- 2>$null
-kubectl --context k3d-cda-chat label node $agents[0] role=grafana --overwrite
-kubectl --context k3d-cda-chat label node $agents[1] role=db --overwrite
-kubectl --context k3d-cda-chat label node $agents[2] role=chat --overwrite
-kubectl --context k3d-cda-chat label node $agents[3] role=nginx --overwrite
-
-k3d image import chat-server:latest -c cda-chat
-kubectl --context k3d-cda-chat apply -f kubernetes/cluster-manifests.yaml -f kubernetes/nginx-configmap.yaml
-```
-
-### Access
-
-| Service | URL |
-| --- | --- |
-| Chat web UI | <http://localhost:8080/> |
-| Grafana | <http://localhost:8080/grafana/> |
-| Chat health | <http://localhost:8080/api/health> |
-
-Check status:
-
-```bash
-kubectl --context k3d-cda-chat get nodes -L role
-kubectl --context k3d-cda-chat get pods -o wide
-kubectl --context k3d-cda-chat get hpa chat-server
-```
-
-### After changing chat server code
-
-```bash
-docker build -t chat-server:latest src/chat-server
-k3d image import chat-server:latest -c cda-chat
-kubectl --context k3d-cda-chat rollout restart deployment/chat-server
-```
-
-(`imagePullPolicy: IfNotPresent` means pods must be restarted to pick up a re-imported `latest` image.)
-
-### HPA/load demo (optional)
-
-```bash
-kubectl --context k3d-cda-chat apply -f kubernetes/demo/load-generator.yaml
-kubectl --context k3d-cda-chat get hpa chat-server -w
-kubectl --context k3d-cda-chat get pods -l app=chat-server -w
-```
-
-Remove demo artifacts:
-
-```bash
-kubectl --context k3d-cda-chat delete job chat-loadgen
-```
-
-### Teardown
-
-```bash
-bash scripts/k3d-down.sh
-# or: k3d cluster delete cda-chat
-```
-
-### Notes
-
-- Nodes are Docker containers on one host (not separate VMs), but scheduling/manifests/HPA work like a Kubernetes cluster.
-- Prometheus `k3s-nodes` static targets in `kubernetes/cluster-manifests.yaml` are Vagrant IPs and won’t resolve in k3d; chat pod scraping and CPU-based HPA still work.
-- MariaDB/Grafana PVCs use k3d’s default local-path storage class.
-
-## Run with Vagrant + VirtualBox (multi-VM k3s)
-
-This option creates separate VMs (1 master + 4 workers) with k3s. Prerequisites: [Vagrant](https://developer.hashicorp.com/vagrant/install), [VirtualBox](https://www.virtualbox.org/), and Docker on the host (to build the chat image).
-
-1. **Build and save the chat image** (there is no registry; the chat worker preloads it):
-
-   ```bash
-   mkdir -p images
-   docker build -t chat-server:latest src/chat-server
-   docker save -o images/chat-server.tar chat-server:latest
-   ```
-
-2. **Bring the cluster up:**
-
-   ```bash
-   vagrant up
-   ```
-
-   The master applies `kubernetes/` manifests. Open <http://localhost:8080/> and <http://localhost:8080/grafana/> when pods are ready.
-
-3. **After changing chat server code:**
-
-   ```bash
-   docker build -t chat-server:latest src/chat-server
-   docker save -o images/chat-server.tar chat-server:latest
-   vagrant rsync k3s-worker-chat
-   vagrant ssh k3s-worker-chat -c "sudo k3s ctr images import /vagrant/images/chat-server.tar"
-   vagrant ssh k3s-master -c "sudo k3s kubectl rollout restart deployment/chat-server"
-   ```
-
-Useful: `vagrant ssh k3s-master -c "sudo k3s kubectl get pods -o wide"`.
-
-### Alternative: Vagrant with Docker provider (experimental)
-
-`Vagrantfile.docker` is an experimental alternative that uses **Docker containers** as Vagrant "machines" instead of VirtualBox VMs (and provisions k3s inside them).
-
-- Prerequisites: [Vagrant](https://developer.hashicorp.com/vagrant/install) and Docker (no VirtualBox). Linux hosts work best; privileged/systemd containers can be less reliable on Docker Desktop (Windows/macOS/WSL2).
-- Run from a shell with `bash`, `docker`, and `vagrant` available (Linux/macOS, or Git Bash/WSL on Windows).
-
-**Start (full setup):**
-
-```bash
-bash scripts/vagrant-docker-up.sh
-```
-
-This builds the chat image and saves `images/chat-server.tar`, ensures the `cda-vagrant` Docker network exists, and runs `vagrant --vagrantfile=Vagrantfile.docker up --provider=docker`.
-
-**Teardown:**
-
-```bash
-bash scripts/vagrant-docker-down.sh
-```
-
-This destroys the Vagrant machines and removes the `cda-vagrant` Docker network (set `REMOVE_NETWORK=0` to keep it).
-
-Manual equivalent:
-
-```bash
-docker network create cda-vagrant   # once
-mkdir -p images && docker build -t chat-server:latest src/chat-server && docker save -o images/chat-server.tar chat-server:latest
-vagrant --vagrantfile=Vagrantfile.docker up --provider=docker
-
-# teardown
-vagrant --vagrantfile=Vagrantfile.docker destroy -f
-docker network rm cda-vagrant
-```
-
-This is less battle-tested than the VirtualBox or k3d setups; for a simpler Docker-based Kubernetes workflow, prefer the **k3d** option above.
-
-## Run with kubeadm (parallel lab, 1 control-plane + 4 workers)
-
-A parallel lab that uses **kubeadm** instead of k3s, with swap disabled,
-containerd and Flannel CNI. It does not change the k3d/k3s setups: it uses
-192.168.56.20-24, host port 18080 and a separate Vagrant state directory.
-The default box is the lighter **Debian bookworm**. The host only needs Vagrant
-+ Docker: `kubectl` runs inside the control-plane VM.
-
-```bash
-bash scripts/kubeadm-up.sh                 # kubeadm init + join + Flannel + app manifests
-bash scripts/kubeadm-verify.sh             # swap/CNI/Ready + HPA + pod and worker failures
-bash scripts/kubeadm-controlplane-failure.sh  # optional: stop the control plane
-bash scripts/kubeadm-down.sh               # destroys only this lab
-```
-
-Faster experimental variant (Docker provider instead of VirtualBox):
-
-```bash
-bash scripts/kubeadm-up-docker.sh
-bash scripts/kubeadm-verify-docker.sh
-bash scripts/kubeadm-down-docker.sh
-```
-
-No Vagrant installed on the PC? Run Vagrant from a controller container
-(the host only needs Docker):
-
-```bash
-bash scripts/kubeadm-in-docker.sh
-bash scripts/kubeadm-verify-in-docker.sh
-bash scripts/kubeadm-controlplane-failure-in-docker.sh  # optional
-bash scripts/kubeadm-down-in-docker.sh
-```
-
-Chat UI: <http://localhost:18080/> · kubeconfig: `/etc/kubernetes/admin.conf` inside `kubeadm-controlplane`
-(e.g. `vagrant ssh kubeadm-controlplane -c 'sudo kubectl get nodes -o wide'`).
-Full architecture, requirement mapping, scaling, fault-tolerance analysis and
-VirtualBox-vs-Docker comparison:
-[`docs/KUBEADM_LAB.md`](docs/KUBEADM_LAB.md).
+The k3d lab needs `k3d` and host `kubectl`. The Vagrant k3s labs use
+`k3s kubectl` on the master instead. Prometheus' `k3s-nodes` static targets in
+`kubernetes/cluster-manifests.yaml` reference the VirtualBox IPs, so they only
+resolve in that lab; chat pod scraping and CPU-based HPA work everywhere.
 
 ## Local development (without Kubernetes)
 
@@ -266,16 +143,23 @@ Open <http://localhost:3000>. Tables are created automatically on startup.
 - **Rooms:** `GET /api/rooms`, `POST /api/rooms` `{ "name":"random" }`
 - **Messages:** `GET /api/messages?room=general&limit=50&before=<id>`, `POST /api/messages` `{ "room","username","body" }`
 - **Profiles:** `GET /api/profile?username=...`, `PUT /api/profile` `{ "username","avatar","color" }`
-- **WebSocket:** connect to `ws://<host>/ws/` (or `wss://`). Client sends `join`, `message`, `typing`, `ping`; server emits `hello`, `joined`, `message`, `presence`, `profile`, `typing`, `pong`, `error`.
+- **WebSocket:** connect to `ws://<host>/ws/` (or `wss/`). Client sends `join`, `message`, `typing`, `ping`; server emits `hello`, `joined`, `message`, `presence`, `profile`, `typing`, `pong`, `error`.
 - **Metrics:** Prometheus metrics at `:9091/metrics` on each chat pod/container (not exposed via nginx/service).
 
 ## Configuration
 
 Key environment variables (see `src/chat-server/lib/config.js`): `PORT` (8080), `METRICS_PORT` (9091), `NATS_URL`, `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD`, and limits like `HISTORY_LIMIT`, `MAX_MESSAGE_LENGTH`. Kubernetes demo credentials are in the `chat-db-credentials` Secret in `kubernetes/cluster-manifests.yaml`.
 
+Useful overrides for the kubeadm lab:
+
+```bash
+K8S_MINOR=1.35 bash scripts/kubeadm-up-docker.sh
+KUBEADM_NODE_IMAGE=my-node bash scripts/kubeadm-in-docker.sh
+```
+
 ## Notes
 
 - **No authentication** (lab project). Nicknames are self-asserted.
 - DB schema is initialized by `mariadb-init` ConfigMap on first boot with an empty volume and also ensured by `src/chat-server/lib/db.js` (keep them in sync).
-- k3d runs on a single Docker host; Vagrant provides separate VMs. Neither setup does automatic node/VM autoscaling (HPA scales chat pods only).
-- The chat image is distributed locally (`k3d image import` or preloaded tarball), not via a registry.
+- No setup does node/VM autoscaling; the HPA scales chat pods only.
+- Mounting `/var/run/docker.sock` into the controller gives it root-equivalent access to the host Docker daemon. Use it only on your own machine.

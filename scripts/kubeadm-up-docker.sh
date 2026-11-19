@@ -10,6 +10,8 @@ cd "$ROOT_DIR"
 export VAGRANT_VAGRANTFILE="$ROOT_DIR/Vagrantfile.kubeadm.docker"
 export VAGRANT_DOTFILE_PATH="$ROOT_DIR/.vagrant-kubeadm-docker"
 export KUBEADM_PREFIX="kubeadm-docker"
+export KUBEADM_NODE_IMAGE="${KUBEADM_NODE_IMAGE:-cda-kubeadm-node}"
+export K8S_MINOR="${K8S_MINOR:-1.36}"
 
 for cmd in vagrant docker; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -39,6 +41,12 @@ kube() {
 
 echo "==> Ensuring Docker network '${DOCKER_NETWORK}' exists..."
 docker network inspect "$DOCKER_NETWORK" >/dev/null 2>&1 || docker network create "$DOCKER_NETWORK"
+
+echo "==> Building node image ${KUBEADM_NODE_IMAGE} (K8s v${K8S_MINOR})..."
+docker build \
+  --build-arg "K8S_MINOR=${K8S_MINOR}" \
+  -t "$KUBEADM_NODE_IMAGE" \
+  docker/kubeadm-node
 
 mkdir -p .kubeadm images
 
@@ -103,6 +111,6 @@ kubeadm Docker lab is up (experimental).
   Grafana:      http://localhost:18080/grafana/
   kubeconfig:   /etc/kubernetes/admin.conf (inside ${CP})
 
-  Verify:       bash scripts/kubeadm-verify-docker.sh
+  Verify:       KUBEADM_DOCKER=1 bash scripts/kubeadm-verify.sh
   Teardown:     bash scripts/kubeadm-down-docker.sh
 EOF

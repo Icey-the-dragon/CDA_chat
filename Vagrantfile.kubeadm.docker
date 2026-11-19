@@ -7,7 +7,7 @@
 #
 # Usage:
 #   bash scripts/kubeadm-up-docker.sh
-#   bash scripts/kubeadm-verify-docker.sh
+#   KUBEADM_DOCKER=1 bash scripts/kubeadm-verify.sh
 #   bash scripts/kubeadm-down-docker.sh
 Vagrant.configure("2") do |config|
   DOCKER_NETWORK = "cda-kubeadm"
@@ -20,7 +20,9 @@ Vagrant.configure("2") do |config|
   config.vm.synced_folder ".", "/vagrant", disabled: true
 
   config.vm.provider "docker" do |d|
-    d.build_dir = "docker/kubeadm-node"
+    # Built by scripts/kubeadm-up-docker.sh so rebuilds are explicit and
+    # K8S_MINOR can be passed as a build arg.
+    d.image = ENV.fetch("KUBEADM_NODE_IMAGE", "cda-kubeadm-node")
     d.remains_running = true
     d.has_ssh = true
     d.privileged = true

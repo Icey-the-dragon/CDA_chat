@@ -10,6 +10,14 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# KUBEADM_DOCKER=1 selects the Docker-provider lab without needing a thin
+# wrapper script (see kubeadm-verify.sh for the same pattern).
+if [[ "${KUBEADM_DOCKER:-0}" == "1" ]]; then
+  export VAGRANT_VAGRANTFILE="${ROOT_DIR}/Vagrantfile.kubeadm.docker"
+  export VAGRANT_DOTFILE_PATH="${VAGRANT_DOTFILE_PATH:-${ROOT_DIR}/.vagrant-kubeadm-docker}"
+  export KUBEADM_PREFIX="kubeadm-docker"
+fi
+
 export VAGRANT_VAGRANTFILE="${VAGRANT_VAGRANTFILE:-$ROOT_DIR/Vagrantfile.kubeadm}"
 export VAGRANT_DOTFILE_PATH="${VAGRANT_DOTFILE_PATH:-$ROOT_DIR/.vagrant-kubeadm}"
 

@@ -22,5 +22,6 @@ docker run --rm -i \
   -w /workspace \
   -e NODE_VOLUME_SOURCE="$ROOT_DIR" \
   -e VAGRANT_DOTFILE_PATH=/workspace/.vagrant-kubeadm-docker \
+  -e KUBEADM_DOCKER=1 \
   "$IMAGE" \
-  bash -lc 'bash scripts/kubeadm-verify-docker.sh "$@"' _ "$@"
+  bash -lc 'bash scripts/kubeadm-verify.sh "$@"' _ "$@"

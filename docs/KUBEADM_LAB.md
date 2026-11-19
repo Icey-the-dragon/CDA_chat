@@ -161,8 +161,8 @@ systemd en vez de VMs. Las herramientas de Kubernetes ya vienen horneadas en
 
 ```bash
 bash scripts/kubeadm-up-docker.sh
-bash scripts/kubeadm-verify-docker.sh
-bash scripts/kubeadm-controlplane-failure-docker.sh   # opcional
+KUBEADM_DOCKER=1 bash scripts/kubeadm-verify.sh
+KUBEADM_DOCKER=1 bash scripts/kubeadm-controlplane-failure.sh   # opcional
 bash scripts/kubeadm-down-docker.sh
 ```
 
@@ -173,7 +173,7 @@ bash scripts/kubeadm-down-docker.sh
 | RAM aproximada | 5-6 GB | 2-3 GB |
 | Aislamiento | VM completa | contenedor privilegiado (`--privileged`, cgroupns host) |
 | Red | `192.168.56.20-24` | Docker network `cda-kubeadm` |
-| Swap | se desactiva dentro de la VM | no se puede desactivar la del host; se usa `--ignore-preflight-errors=Swap` |
+| Swap | `swapoff -a` en la VM | no se puede desactivar la del host; `--ignore-preflight-errors=Swap` + kubelet `--fail-swap-on=false` |
 | Fiabilidad | alta | dependiente del host; Linux funciona mejor que Docker Desktop |
 | Estado Vagrant | `.vagrant-kubeadm/` | `.vagrant-kubeadm-docker/` |
 
@@ -183,8 +183,13 @@ systemd depende de cgroups, montajes y del kernel del host, y hay que ignorar el
 check de swap. Para una entrega donde se evalúa "instalar con kubeadm", la
 variante de VirtualBox es la recomendable; la de Docker sirve para iterar
 rápido. No ejecutar ambas a la vez: los puertos y nombres podrían solaparse.
-`K8S_MINOR` solo afecta a la variante VirtualBox; en Docker la versión va
-horneada en la imagen (`ARG K8S_MINOR=1.36`).
+`K8S_MINOR` funciona en ambas variantes; en Docker se pasa como build arg al
+construir `cda-kubeadm-node` (`K8S_MINOR=1.35 bash scripts/kubeadm-up-docker.sh`).
+
+Sobre el swap: dentro de un contenedor no se puede desactivar el swap del host.
+Además de `--ignore-preflight-errors=Swap`, la imagen de los nodos incluye un
+drop-in de systemd con `KUBELET_EXTRA_ARGS=--fail-swap-on=false` para que el
+propio `kubelet` no se niegue a arrancar.
 
 ### 4.2 Sin Vagrant instalado: Vagrant dentro de un contenedor
 
