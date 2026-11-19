@@ -4,6 +4,8 @@ set -uo pipefail
 # Optional disruptive test: stop the single control-plane node, observe that
 # running workloads stay up but the API is unavailable, then restore it.
 # This script is intentionally separate from kubeadm-verify.sh.
+#
+# kubectl runs on the control-plane VM; the host only needs Vagrant + curl.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -11,7 +13,6 @@ cd "$ROOT_DIR"
 export VAGRANT_VAGRANTFILE="$ROOT_DIR/Vagrantfile.kubeadm"
 export VAGRANT_DOTFILE_PATH="$ROOT_DIR/.vagrant-kubeadm"
 
-KUBE=(kubectl --kubeconfig "$ROOT_DIR/.kubeadm/admin.conf")
 CP="kubeadm-controlplane"
 LOG_DIR="$ROOT_DIR/docs/evidence"
 mkdir -p "$LOG_DIR"
@@ -21,6 +22,16 @@ FAILED=0
 pass() { echo "  [OK]   $*"; }
 fail() { echo "  [FAIL] $*"; FAILED=$((FAILED + 1)); }
 
+kube() {
+  local cmd="sudo kubectl"
+  local arg escaped
+  for arg in "$@"; do
+    printf -v escaped '%q' "$arg"
+    cmd+=" $escaped"
+  done
+  vagrant ssh "$CP" -c "$cmd"
+}
+
 echo "==> Stopping kubelet on ${CP} (this stops the API server / scheduler / controller-manager / etcd static pods)..."
 vagrant ssh "$CP" -c 'sudo systemctl stop kubelet' >/dev/null 2>&1 \
   || fail "could not stop kubelet on ${CP}"
@@ -28,10 +39,10 @@ sleep 20
 
 echo
 echo "==> API availability while the control plane is down"
-if "${KUBE[@]}" get nodes >/dev/null 2>&1; then
+if kube get nodes >/dev/null 2>&1; then
   fail "API is still reachable (unexpected for a single control plane)"
 else
-  pass "kubectl can no longer reach the API server"
+  pass "kubectl on the control plane can no longer reach the API server"
 fi
 
 echo
@@ -48,7 +59,7 @@ vagrant ssh "$CP" -c 'sudo systemctl start kubelet' >/dev/null 2>&1 \
   || fail "could not restart kubelet on ${CP}"
 restored=0
 for _ in $(seq 1 60); do
-  if "${KUBE[@]}" get nodes >/dev/null 2>&1; then
+  if kube get nodes >/dev/null 2>&1; then
     restored=1
     break
   fi
@@ -60,8 +71,8 @@ else
   fail "API server did not come back"
 fi
 
-"${KUBE[@]}" get nodes -o wide || true
-"${KUBE[@]}" get pods -o wide || true
+kube get nodes -o wide || true
+kube get pods -o wide || true
 
 echo
 if [ "$FAILED" -eq 0 ]; then

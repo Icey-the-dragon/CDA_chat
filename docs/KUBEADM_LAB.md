@@ -94,7 +94,7 @@ configurable con `K8S_MINOR` (por defecto `1.36`).
 | Contextualización y arquitectura | Secciones 1 y 2 de este documento. |
 | **1 master + 2 workers** (mínimo) | Se crean **1 control-plane + 4 workers**, mismo número que el setup actual (el requisito pide dos; aquí hay cuatro para conservar la topología de la app). |
 | Deshabilitar swap | `swapoff -a` + `sed` en `/etc/fstab` en la provision común. Verificado por `scripts/kubeadm-verify.sh`. |
-| Configurar CNI (Flannel/Calico) hasta `Ready` | Flannel aplicado en el master; el script espera `kubectl wait --for=condition=Ready nodes --all`. |
+| Configurar CNI (Flannel/Calico) hasta `Ready` | Flannel aplicado en el master; el script espera `kubectl wait --for=condition=Ready nodes --all` ejecutado **dentro del control-plane**. |
 | Verificar **escalado** | HPA v2 (1→3 réplicas, 60% CPU) + Job `load-generator`; verificado en el paso 4 del script. |
 | Analizar **tolerancia a fallos** | Pruebas de pod, worker y control-plane + análisis en la sección 5. |
 
@@ -102,8 +102,10 @@ configurable con `K8S_MINOR` (por defecto `1.36`).
 
 ## 4. Puesta en marcha
 
-Prerrequisitos en el host: Vagrant + VirtualBox, Docker, `kubectl` y conexión a
-Internet (para las imágenes y el repo apt de Kubernetes).
+Prerrequisitos en el host: Vagrant + VirtualBox, Docker y conexión a Internet
+(para las imágenes y el repo apt de Kubernetes). **No hace falta instalar
+`kubectl` en el host**: todos los comandos `kubectl` se ejecutan dentro del
+control-plane mediante `vagrant ssh kubeadm-controlplane -c 'sudo kubectl ...'`.
 
 ```bash
 bash scripts/kubeadm-up.sh          # construye la imagen, inicializa y despliega
@@ -123,20 +125,21 @@ Accesos:
 - Chat UI: <http://localhost:18080/>
 - Grafana: <http://localhost:18080/grafana/>
 - Health: <http://localhost:18080/api/health>
-- kubeconfig: `.kubeadm/admin.conf`
+- kubeconfig: `/etc/kubernetes/admin.conf` (solo dentro de `kubeadm-controlplane`)
 
-Ejemplos:
+Ejemplos (se ejecutan en el host pero corren **dentro del master**):
 
 ```bash
-kubectl --kubeconfig .kubeadm/admin.conf get nodes -o wide
-kubectl --kubeconfig .kubeadm/admin.conf get hpa chat-server
-kubectl --kubeconfig .kubeadm/admin.conf logs deploy/chat-server
+vagrant ssh kubeadm-controlplane -c 'sudo kubectl get nodes -o wide'
+vagrant ssh kubeadm-controlplane -c 'sudo kubectl get hpa chat-server'
+vagrant ssh kubeadm-controlplane -c 'sudo kubectl logs deploy/chat-server'
 ```
 
 Notas sobre el despliegue de la app:
 
-- El master aplica `kubernetes/cluster-manifests.yaml` y
-  `kubernetes/nginx-configmap.yaml`.
+- El master aplica `/vagrant/kubernetes/cluster-manifests.yaml` y
+  `/vagrant/kubernetes/nginx-configmap.yaml` (la carpeta del repo está montada
+  en `/vagrant` dentro de las VMs).
 - `chat-server` se parchea a `nodeSelector: workload: chat` (ver sección 2).
 - Prometheus cambia sus targets estáticos de `192.168.56.1x` a
   `192.168.56.2x` y Grafana usa `root_url` con el puerto 18080.
@@ -156,7 +159,7 @@ Notas sobre el despliegue de la app:
 - scale-down con ventana de estabilización de 120 s
 
 Prueba: `scripts/kubeadm-verify.sh` aplica
-`kubernetes/demo/load-generator.yaml` (10 workers, 180 s) y espera a que
+`/vagrant/kubernetes/demo/load-generator.yaml` (10 workers, 180 s) y espera a que
 `status.desiredReplicas >= 2`. El resultado real queda en
 `docs/evidence/kubeadm-verify.txt`.
 
