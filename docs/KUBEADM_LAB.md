@@ -172,7 +172,7 @@ bash scripts/kubeadm-down-docker.sh
 | Arranque | ~30-60 s por VM | ~2-10 s por contenedor (imagen solo se construye la 1ª vez) |
 | RAM aproximada | 5-6 GB | 2-3 GB |
 | Aislamiento | VM completa | contenedor privilegiado (`--privileged`, cgroupns host) |
-| Red | `192.168.56.20-24` | Docker network `cda-kubeadm` |
+| Red | `192.168.56.20-24` | Docker `bridge` por defecto |
 | Swap | `swapoff -a` en la VM | no se puede desactivar la del host; `--ignore-preflight-errors=Swap` + kubelet `--fail-swap-on=false` |
 | Fiabilidad | alta | dependiente del host; Linux funciona mejor que Docker Desktop |
 | Estado Vagrant | `.vagrant-kubeadm/` | `.vagrant-kubeadm-docker/` |
@@ -214,9 +214,15 @@ bash scripts/kubeadm-controlplane-failure-in-docker.sh  # fallo del control-plan
 bash scripts/kubeadm-down-in-docker.sh               # teardown
 ```
 
-Para la prueba de fallo del control-plane, el wrapper usa
-`HEALTH_URL=http://kubeadm-docker-worker-nginx:30080/api/health`: desde el
-contenedor controlador, `localhost:18080` no es el puerto publicado en el host.
+Se usa la red `bridge` por defecto de Docker, **no una red personalizada**: el
+proveedor Docker de Vagrant obtiene la IP SSH de `NetworkSettings.IPAddress`,
+que solo se rellena en `bridge`. Con una red propia ese campo queda vacío y
+Vagrant intenta `127.0.0.1:2222`, dando `Warning: Connection refused`.
+
+Para la prueba de fallo del control-plane, el wrapper resuelve la IP de nginx
+con `docker inspect` y usa `HEALTH_URL=http://<IP>:30080/api/health`: desde el
+contenedor controlador, `localhost:18080` no es el puerto publicado en el host
+y `bridge` no tiene DNS por nombre de contenedor.
 
 Detalle clave: cuando Vagrant corre dentro del contenedor, `Dir.pwd` es una
 ruta del contenedor que el daemon del host no puede ver. Por eso

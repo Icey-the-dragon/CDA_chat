@@ -20,7 +20,6 @@ for cmd in vagrant docker; do
   fi
 done
 
-DOCKER_NETWORK="cda-kubeadm"
 CP="${KUBEADM_PREFIX}-controlplane"
 WORKERS=(
   "${KUBEADM_PREFIX}-worker-grafana"
@@ -38,9 +37,6 @@ kube() {
   done
   vagrant ssh "$CP" -c "$cmd"
 }
-
-echo "==> Ensuring Docker network '${DOCKER_NETWORK}' exists..."
-docker network inspect "$DOCKER_NETWORK" >/dev/null 2>&1 || docker network create "$DOCKER_NETWORK"
 
 echo "==> Building node image ${KUBEADM_NODE_IMAGE} (K8s v${K8S_MINOR})..."
 docker build \

@@ -10,8 +10,10 @@
 #   KUBEADM_DOCKER=1 bash scripts/kubeadm-verify.sh
 #   bash scripts/kubeadm-down-docker.sh
 Vagrant.configure("2") do |config|
-  DOCKER_NETWORK = "cda-kubeadm"
-
+  # Use Docker's DEFAULT bridge, not a user-defined network: Vagrant's Docker
+  # provider reads NetworkSettings.IPAddress to find the SSH address, and that
+  # field is only populated on the default bridge. On a custom network it is
+  # empty and Vagrant falls back to 127.0.0.1:2222 -> "Connection refused".
   config.ssh.username = "root"
   config.ssh.password = "vagrant"
   config.ssh.insert_key = false
@@ -32,7 +34,6 @@ Vagrant.configure("2") do |config|
       "--tmpfs", "/run:exec,mode=755",
       "--tmpfs", "/run/lock:exec,mode=1777",
       "--tmpfs", "/tmp:exec,mode=1777",
-      "--network", DOCKER_NETWORK,
     ]
     # When Vagrant itself runs inside a controller container, Dir.pwd is a
     # container path that the host Docker daemon cannot see. NODE_VOLUME_SOURCE

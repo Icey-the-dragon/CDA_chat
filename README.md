@@ -43,8 +43,8 @@ What the scripts do:
 1. Build `cda-vagrant-controller` (Vagrant + Docker CLI + SSH client).
 2. Build `cda-kubeadm-node` (Debian + containerd + kubelet/kubeadm/kubectl, with
    `KUBELET_EXTRA_ARGS=--fail-swap-on=false`). `K8S_MINOR` is a build arg.
-3. Create the Docker network `cda-kubeadm`.
-4. Start 5 containers: `kubeadm-docker-controlplane` + 4 workers.
+3. Start 5 containers on Docker's default `bridge` network:
+   `kubeadm-docker-controlplane` + 4 workers.
 5. Run `kubeadm init` / `kubeadm join`, install Flannel, apply the app manifests.
 6. Keep Vagrant state in `.vagrant-kubeadm-docker/` and generated join data in
    `.kubeadm/` (both git-ignored).
@@ -64,6 +64,17 @@ docker exec kubeadm-docker-controlplane sudo kubectl get pods -o wide
 Because host swap cannot be disabled from a container, kubeadm is invoked with
 `--ignore-preflight-errors=Swap` and kubelet with `--fail-swap-on=false`. That is
 why the Docker variant works on machines with swap enabled.
+
+If an older run reports `kubeadm-docker-controlplane: Warning: Connection
+refused`, its containers were created on the custom `cda-kubeadm` network.
+Vagrant's Docker provider can only find the SSH address on Docker's default
+`bridge`. Recreate them:
+
+```bash
+bash scripts/kubeadm-down-in-docker.sh
+docker network rm cda-kubeadm 2>/dev/null || true   # leftover from older runs
+bash scripts/kubeadm-in-docker.sh
+```
 
 Evidence from the checks is written to `docs/evidence/*.txt`.
 

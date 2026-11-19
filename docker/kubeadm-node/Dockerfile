@@ -32,11 +32,17 @@ RUN mkdir -p /etc/systemd/system/kubelet.service.d \
        > /etc/systemd/system/kubelet.service.d/20-swap.conf
 
 # SSH access for Vagrant (root password is used by the Docker provider).
-RUN mkdir -p /var/run/sshd \
+# /run is a tmpfs at runtime, so a tmpfiles entry recreates /run/sshd on boot.
+RUN mkdir -p /var/run/sshd /etc/tmpfiles.d \
+  && printf 'd /run/sshd 0755 root root -\n' > /etc/tmpfiles.d/sshd.conf \
   && sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
   && sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+  && sed -i 's@session\s*required\s*pam_loginuid.so@session optional pam_loginuid.so@g' /etc/pam.d/sshd \
   && echo 'root:vagrant' | chpasswd \
   && (systemctl enable ssh || true)
+
+# Vagrant SSHes to the container address on port 22.
+EXPOSE 22
 
 RUN systemctl mask \
     getty@tty1.service \

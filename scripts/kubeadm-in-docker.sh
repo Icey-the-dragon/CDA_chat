@@ -18,10 +18,6 @@ for cmd in docker; do
 done
 
 IMAGE="${VAGRANT_CONTROLLER_IMAGE:-cda-vagrant-controller}"
-NETWORK="cda-kubeadm"
-
-echo "==> Ensuring Docker network '${NETWORK}' exists on the host..."
-docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK"
 
 echo "==> Building Vagrant controller image (${IMAGE})..."
 docker build -t "$IMAGE" docker/vagrant-controller
@@ -29,7 +25,6 @@ docker build -t "$IMAGE" docker/vagrant-controller
 echo "==> Running kubeadm-up-docker.sh inside the controller container..."
 echo "    (Vagrant is not installed on the host; only Docker is used.)"
 docker run --rm -i \
-  --network "$NETWORK" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$ROOT_DIR:/workspace" \
   -w /workspace \
