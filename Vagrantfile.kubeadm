@@ -1,0 +1,152 @@
+# Parallel kubeadm lab for CDA Chat.
+#
+# Same 1 master + 4 workers topology as the default Vagrant/k3s lab, but built
+# with kubeadm instead of k3s. It uses 192.168.56.20-24 so it can coexist with
+# the existing k3s lab (192.168.56.10-14).
+#
+# Use the helpers in scripts/ so VAGRANT_DOTFILE_PATH and VAGRANT_VAGRANTFILE
+# are set correctly:
+#   bash scripts/kubeadm-up.sh
+#   bash scripts/kubeadm-verify.sh
+#   bash scripts/kubeadm-down.sh
+Vagrant.configure("2") do |config|
+  config.vm.box = "ubuntu/jammy64"
+
+  # Allow overriding the Kubernetes minor version, e.g. K8S_MINOR=1.35.
+  k8s_minor = ENV.fetch("K8S_MINOR", "1.36")
+
+  # A loaded/resumed host can be slow; retry instead of failing provisioning.
+  config.ssh.insert_key = false
+  config.ssh.forward_agent = true
+  config.ssh.connect_timeout = 60
+  config.ssh.connect_retries = 10
+  config.ssh.connect_retry_delay = 5
+  config.vm.boot_timeout = 600
+
+  # rsync avoids vboxsf problems on Windows. The host writes .kubeadm/join.sh
+  # and images/chat-server.tar before the workers are started, so they are
+  # synced into the guests at `vagrant up` time.
+  config.vm.synced_folder ".", "/vagrant", type: "rsync",
+    rsync__exclude: [".git/", ".vagrant/", ".vagrant-kubeadm/", "node_modules/"]
+
+  # Everything a kubeadm node needs before init/join.
+  common_provision = <<-SHELL
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    echo "==> [kubeadm] Disabling swap (required by kubelet)..."
+    swapoff -a
+    sed -i '/\\bswap\\b/s/^/#/' /etc/fstab || true
+
+    echo "==> [kubeadm] Loading kernel modules and setting sysctl..."
+    cat > /etc/modules-load.d/k8s.conf <<'EOF'
+overlay
+br_netfilter
+EOF
+    modprobe overlay
+    modprobe br_netfilter
+    cat > /etc/sysctl.d/k8s.conf <<'EOF'
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward                 = 1
+EOF
+    sysctl --system
+
+    echo "==> [kubeadm] Installing containerd..."
+    apt-get update
+    apt-get install -y containerd apt-transport-https ca-certificates curl gpg
+    mkdir -p /etc/containerd
+    containerd config default > /etc/containerd/config.toml
+    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+    systemctl enable --now containerd
+
+    echo "==> [kubeadm] Installing kubelet, kubeadm and kubectl (v#{k8s_minor})..."
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL "https://pkgs.k8s.io/core:/stable:/v#{k8s_minor}/deb/Release.key" \\
+      | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v#{k8s_minor}/deb/ /" \\
+      > /etc/apt/sources.list.d/kubernetes.list
+    apt-get update
+    apt-get install -y kubelet kubeadm kubectl
+    apt-mark hold kubelet kubeadm kubectl
+    systemctl enable kubelet
+  SHELL
+
+  # ------------------------------------------------------------------ master
+  master_provision = common_provision + <<-SHELL
+    set -e
+    IP=192.168.56.20
+
+    if [ ! -f /etc/kubernetes/admin.conf ]; then
+      echo "==> [kubeadm] Running kubeadm init..."
+      kubeadm init \\
+        --apiserver-advertise-address="${IP}" \\
+        --pod-network-cidr=10.244.0.0/16
+    else
+      echo "==> [kubeadm] Control plane already initialized; skipping init."
+    fi
+
+    mkdir -p /root/.kube
+    cp -f /etc/kubernetes/admin.conf /root/.kube/config
+    chown root:root /root/.kube/config
+
+    echo "==> [kubeadm] Installing Flannel CNI..."
+    kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+  SHELL
+
+  config.vm.define "kubeadm-controlplane" do |cp|
+    cp.vm.hostname = "kubeadm-controlplane"
+    cp.vm.network "private_network", ip: "192.168.56.20"
+    cp.vm.provider "virtualbox" do |vb|
+      vb.memory = "2048"
+      vb.cpus = 2
+    end
+    cp.vm.provision "shell", upload_path: "/home/vagrant/kubeadm-common.sh", inline: master_provision
+  end
+
+  # ----------------------------------------------------------------- workers
+  # `workload=chat` is added by scripts/kubeadm-up.sh to the chat and nginx
+  # workers so chat pods can be rescheduled if one of them fails.
+  nodes = {
+    "kubeadm-worker-grafana" => { ip: "192.168.56.21", role: "grafana", memory: "1024", cpus: 1 },
+    "kubeadm-worker-db"      => { ip: "192.168.56.22", role: "db",      memory: "1536", cpus: 1 },
+    "kubeadm-worker-chat"    => { ip: "192.168.56.23", role: "chat",    memory: "1536", cpus: 2, chat_image: true },
+    "kubeadm-worker-nginx"   => { ip: "192.168.56.24", role: "nginx",   memory: "1024", cpus: 1, chat_image: true,
+                                  forward_port: 18080 }
+  }
+
+  nodes.each do |name, info|
+    worker_provision = common_provision + <<-SHELL
+      set -e
+
+      if [ ! -f /etc/kubernetes/kubelet.conf ]; then
+        if [ ! -f /vagrant/.kubeadm/join.sh ]; then
+          echo "ERROR: /vagrant/.kubeadm/join.sh is missing. Run scripts/kubeadm-up.sh first." >&2
+          exit 1
+        fi
+        echo "==> [kubeadm] Joining control plane..."
+        bash /vagrant/.kubeadm/join.sh
+      else
+        echo "==> [kubeadm] Node already joined; skipping join."
+      fi
+
+      if [ "#{info.fetch(:chat_image, false)}" = "true" ] && [ -f /vagrant/images/chat-server.tar ]; then
+        echo "==> [kubeadm] Importing chat-server image into containerd..."
+        ctr -n k8s.io images import /vagrant/images/chat-server.tar
+      fi
+    SHELL
+
+    config.vm.define name do |node|
+      node.vm.hostname = name
+      node.vm.network "private_network", ip: info[:ip]
+      node.vm.provider "virtualbox" do |vb|
+        vb.memory = info[:memory]
+        vb.cpus = info.fetch(:cpus, 1)
+      end
+      if info[:forward_port]
+        node.vm.network "forwarded_port", guest: 30080, host: info[:forward_port]
+      end
+      node.vm.provision "shell", upload_path: "/home/vagrant/kubeadm-common.sh", inline: worker_provision
+    end
+  end
+end

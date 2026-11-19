@@ -23,6 +23,7 @@ chat-server replicas -> nats-service:4222 and mariadb-service:3306
 - `kubernetes/demo/load-generator.yaml` – optional HPA load Job
 - `k3d-cluster.yaml`, `scripts/` – local Docker-based Kubernetes (k3d) setup
 - `Vagrantfile` – multi-VM k3s lab (VirtualBox) setup
+- `Vagrantfile.kubeadm`, `scripts/kubeadm-*.sh`, `docs/KUBEADM_LAB.md` – parallel kubeadm lab (1 control-plane + 4 workers) with scalability/failure analysis
 
 ## Run with Docker + k3d (recommended)
 
@@ -60,7 +61,7 @@ This builds the chat image, creates a 5-node cluster (`cda-chat`, context `k3d-c
 ```powershell
 # From the repository root
 docker build -t chat-server:latest src/chat-server
-k3d cluster create --config k3d-cluster.yaml
+k3d cluster create --config kubernetes/docker-k3s/k3d-cluster.yaml
 kubectl --context k3d-cda-chat wait --for=condition=Ready nodes --all --timeout=180s
 
 # Label nodes to match manifest nodeSelectors
@@ -200,6 +201,23 @@ docker network rm cda-vagrant
 ```
 
 This is less battle-tested than the VirtualBox or k3d setups; for a simpler Docker-based Kubernetes workflow, prefer the **k3d** option above.
+
+## Run with kubeadm (parallel lab, 1 control-plane + 4 workers)
+
+A parallel lab that uses **kubeadm** instead of k3s, with swap disabled,
+containerd and Flannel CNI. It does not change the k3d/k3s setups: it uses
+192.168.56.20-24, host port 18080 and a separate Vagrant state directory.
+
+```bash
+bash scripts/kubeadm-up.sh                 # kubeadm init + join + Flannel + app manifests
+bash scripts/kubeadm-verify.sh             # swap/CNI/Ready + HPA + pod and worker failures
+bash scripts/kubeadm-controlplane-failure.sh  # optional: stop the control plane
+bash scripts/kubeadm-down.sh               # destroys only this lab
+```
+
+Chat UI: <http://localhost:18080/> · kubeconfig: `.kubeadm/admin.conf`.
+Full architecture, requirement mapping, scaling and fault-tolerance analysis:
+[`docs/KUBEADM_LAB.md`](docs/KUBEADM_LAB.md).
 
 ## Local development (without Kubernetes)
 

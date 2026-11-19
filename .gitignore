@@ -1,5 +1,7 @@
 kubeconfig.yaml
 .vagrant
+.vagrant-kubeadm/
+.kubeadm/
 node_modules/
 .env
 *.log
