@@ -48,10 +48,13 @@
   .panel { margin-top: 14px; }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  button, label.toggle {
+  button, label.toggle, .controls input[type="number"], .controls select {
     background: #16253c; color: var(--text); border: 1px solid var(--line);
     border-radius: 8px; padding: 7px 11px; font: inherit; font-size: 13px; cursor: pointer;
   }
+  .controls input[type="number"] { width: 92px; cursor: text; }
+  .controls select { cursor: pointer; }
+  .controls .field { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
   button:hover { border-color: var(--accent); }
   button:disabled { opacity: .5; cursor: wait; }
   label.toggle { display: inline-flex; gap: 7px; align-items: center; user-select: none; }
@@ -119,8 +122,15 @@
       <h2>Log en vivo</h2>
       <div class="controls">
         <label class="toggle"><input type="checkbox" id="auto" checked> Auto</label>
-        <button id="once">Pedir otra</button>
+        <label class="field">Peticiones
+          <input type="number" id="reqs" min="10" max="10000" step="10" value="100">
+        </label>
+        <select id="mode" title="Tipo de carga">
+          <option value="whoami">Ligera</option>
+          <option value="slow">CPU (300 ms)</option>
+        </select>
         <button id="load">Generar carga</button>
+        <button id="once">Pedir otra</button>
         <button id="clear">Limpiar</button>
       </div>
     </div>
@@ -149,11 +159,12 @@
   let lastPod = null;
   let lastNode = null;
   let busy = false;
+  let loading = false;
 
   const el = {
     pod: $('pod'), node: $('node'), total: $('total'), distinct: $('distinct'),
     latency: $('latency'), bars: $('bars'), log: $('log'), auto: $('auto'),
-    once: $('once'), load: $('load'), clear: $('clear')
+    reqs: $('reqs'), mode: $('mode'), once: $('once'), load: $('load'), clear: $('clear')
   };
 
   function colorFor(pod) {
@@ -234,7 +245,7 @@
   }
 
   async function poll() {
-    if (busy) return;
+    if (busy || loading) return;
     busy = true;
     try {
       const { data, ms } = await call('/api/whoami?t=' + Date.now());
@@ -256,16 +267,57 @@
   el.once.onclick = () => { poll(); };
 
   el.load.onclick = async () => {
+    const requested = Number.parseInt(el.reqs.value, 10);
+    const n = Math.min(10000, Math.max(10, Number.isFinite(requested) ? requested : 100));
+    el.reqs.value = String(n);
+    const mode = el.mode.value;
+    const path = mode === 'slow' ? '/api/slow' : '/api/whoami';
+    // A bounded worker pool keeps 10000 requests from saturating the browser.
+    const workers = Math.min(25, n);
+    const step = Math.max(1, Math.floor(n / 20));
+    let next = 0;
+    let done = 0;
+    let failed = 0;
+
+    loading = true;
     el.load.disabled = true;
+    el.once.disabled = true;
+    el.load.textContent = `0/${n}`;
     const t0 = performance.now();
+
+    async function worker() {
+      while (next < n) {
+        const i = next++;
+        try {
+          const { data, ms } = await call(path + '?i=' + i);
+          done += 1;
+          total += 1;
+          latencySum += ms;
+          if (data && data.pod) {
+            counts.set(data.pod, (counts.get(data.pod) || 0) + 1);
+            lastPod = data.pod;
+            if (data.node) lastNode = data.node;
+          }
+        } catch {
+          failed += 1;
+        }
+        if (done % step === 0) el.load.textContent = `${done}/${n}`;
+      }
+    }
+
     try {
-      await Promise.all(Array.from({ length: 10 }, () => call('/api/slow')));
+      await Promise.all(Array.from({ length: workers }, () => worker()));
       const ms = Math.round(performance.now() - t0);
-      addEntry('10 peticiones', 'carga CPU', '10 x /api/slow', ms);
+      const rate = ms ? Math.round((n / ms) * 1000) : 0;
+      addEntry(`${n} peticiones`, mode === 'slow' ? 'CPU' : 'Ligera',
+               `${path} · ${rate} req/s${failed ? ' · ' + failed + ' fallos' : ''}`, ms);
     } catch (error) {
       addEntry('error', '', String(error), 0);
     } finally {
+      loading = false;
       el.load.disabled = false;
+      el.once.disabled = false;
+      el.load.textContent = 'Generar carga';
       render();
     }
   };

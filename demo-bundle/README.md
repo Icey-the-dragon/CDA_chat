@@ -45,8 +45,13 @@ de la API de Kubernetes ni de servicios externos:
 - **Peticiones del panel**, **réplicas detectadas** y **latencia media**.
 - **Distribución entre réplicas**: barras con el número de respuestas por pod.
 - **Log en vivo** con hora, pod,endpoint y duración de cada petición.
-- Botones: `Pedir otra`, `Generar carga` (10 peticiones de CPU en paralelo) y
-  `Limpiar`. El interruptor `Auto` activa una petición cada 700 ms.
+- Control **Peticiones** (10–10000) y selector **Ligera / CPU (300 ms)** para el
+  botón `Generar carga`. Muestra progreso y `req/s` en el log, con un máximo de
+  25 peticiones concurrentes para no saturar el navegador.
+- Botones `Pedir otra` y `Limpiar`. El interruptor `Auto` activa una petición
+  cada 700 ms.
+- Aviso: el modo CPU con valores altos tarda mucho (10000 × 300 ms son ~3000 s
+  de CPU). Usa el modo **Ligera** para volúmenes grandes.
 
 Todo se calcula en el navegador a partir de las respuestas de `/api/whoami`, así
 que verás aparecer nuevos pods en cuanto escale o se recree un ReplicaSet.
