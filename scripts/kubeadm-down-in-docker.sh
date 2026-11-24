@@ -14,6 +14,7 @@ docker run --rm -i \
   -w /workspace \
   -e NODE_VOLUME_SOURCE="$ROOT_DIR" \
   -e VAGRANT_DOTFILE_PATH=/workspace/.vagrant-kubeadm-docker \
+  -e VAGRANT_DEFAULT_PROVIDER=docker \
   "$IMAGE" \
   bash -lc 'bash scripts/kubeadm-down-docker.sh'
 

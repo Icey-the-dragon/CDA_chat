@@ -96,7 +96,10 @@ La variante Docker usa las mismas funciones con otras IPs:
 Detalles de red y sistema:
 
 - CNI **Flannel** con `--pod-network-cidr=10.244.0.0/16`.
-- containerd con `SystemdCgroup = true`.
+- containerd con `SystemdCgroup = true` en VirtualBox. En la variante Docker se
+  usa `SystemdCgroup = false` y `--cgroup-driver=cgroupfs` porque los contenedores
+  comparten el namespace de cgroups del host y no pueden gestionar los scopes
+  de systemd reales.
 - Swap desactivada con `swapoff -a` y comentando `/etc/fstab` en **todos** los
   nodos VirtualBox. En Docker no se puede cambiar el swap del host: kubeadm usa
   `--ignore-preflight-errors=Swap` y kubelet usa `--fail-swap-on=false`.
@@ -106,9 +109,14 @@ Detalles de red y sistema:
 
 ### Parches específicos de kubeadm
 
-Los manifiestos compartidos (`kubernetes/cluster-manifests.yaml`) no cambian
-para no afectar a k3d/k3s. `scripts/kubeadm-up.sh` y `kubeadm-up-docker.sh`
-aplican estos cambios solo en este clúster:
+Los manifiestos compartidos (`kubernetes/cluster-manifests.yaml`) solo difieren
+de k3d/k3s en la configuración de Grafana (estrategia `Recreate`, `fsGroup: 472`
+y un `initContainer` que hace `chown 472:472` del `hostPath`): los volúmenes
+`hostPath` ignoran `fsGroup`, así que un directorio recién creado pertenece a
+root y el proceso de Grafana (uid 472) no podría escribir en él. La estrategia
+`Recreate` evita además que dos pods se disputen el PVC `ReadWriteOnce`.
+`scripts/kubeadm-up.sh` y `kubeadm-up-docker.sh`
+aplican estos otros cambios solo en este clúster:
 
 | Carga | nodeSelector original | nodeSelector en kubeadm |
 |---|---|---|
@@ -121,13 +129,25 @@ aplican estos cambios solo en este clúster:
 | `mariadb-failover` | – | `role: control-plane` (taint eliminado) |
 | `nats` StatefulSet | `role: control-plane` | `nats: enabled` (ambos workers, 2 pods) |
 
-Además se añaden reglas de anti-afinidad: NATS y nginx se reparten obligatoriamente
-entre los dos workers; chat usa una regla preferida para poder seguir escalando
-más allá de dos réplicas. La imagen `chat-server:latest` se importa en los dos
+En la variante Docker, además, el aprovisionamiento del control-plane parchea
+dos ConfigMaps del clúster antes de instalar Flannel: `kube-proxy` deja de
+escribir los sysctls `nf_conntrack_*` (un contenedor no puede hacerlo) y
+CoreDNS pierde el plugin `loop` (el DNS embebido de Docker provoca falsos
+positivos de bucle). Sin esos dos cambios, kube-proxy y Flannel entran en
+`CrashLoopBackOff` y ningún pod puede obtener red.
+
+Además se añaden reglas de anti-afinidad: NATS y nginx se reparten
+obligatoriamente entre los dos workers; chat usa una regla preferida para poder
+escalar a 4 réplicas. Para que el anti-affinity rígido de nginx no bloquee el
+paso de 1 a 2 réplicas, su Deployment usa `maxSurge=0, maxUnavailable=1`: el pod
+antiguo se retira antes de crear el nuevo. La imagen `chat-server:latest` se importa en los dos
 workers para que la recuperación ante fallo no dependa de descargar imágenes.
 Prometheus usa un ConfigMap propio: `kubernetes/kubeadm/prometheus-config.yaml`
 (VirtualBox) o `prometheus-config-docker.yaml` (Docker, con DNS por nombre de
-contenedor).
+contenedor). kubeadm no trae un provisioner dinámico, así que
+`kubernetes/kubeadm/storage.yaml` crea PV `hostPath` estáticos y reservados para
+cada PVC (`mariadb-primary`, `mariadb-replica`, `mariadb` y `grafana`) en el nodo
+que ya ejecuta ese servicio.
 
 ---
 
@@ -199,12 +219,17 @@ systemd en vez de VMs. Las herramientas de Kubernetes ya vienen horneadas en
 `docker/kubeadm-node/Dockerfile`, así que el arranque es mucho más rápido.
 
 ```bash
-bash scripts/kubeadm-up-docker.sh
-KUBEADM_DOCKER=1 bash scripts/kubeadm-verify.sh
-KUBEADM_DOCKER=1 bash scripts/kubeadm-chaos.sh                  # 11 fallos automatizados
-KUBEADM_DOCKER=1 bash scripts/kubeadm-controlplane-failure.sh   # opcional
-bash scripts/kubeadm-down-docker.sh
+CONTAINERD_SNAPSHOTTER=native bash scripts/kubeadm-in-docker.sh  # Wrapper recomendado; native en Docker Desktop
+bash scripts/kubeadm-verify-in-docker.sh
+bash scripts/kubeadm-chaos-in-docker.sh                  # 11 fallos automatizados
+bash scripts/kubeadm-controlplane-failure-in-docker.sh   # opcional
+bash scripts/kubeadm-down-in-docker.sh
 ```
+
+Si Vagrant está instalado en el host, también se pueden llamar directamente
+`scripts/kubeadm-up-docker.sh`, `kubeadm-verify.sh` (con `KUBEADM_DOCKER=1`) y
+`kubeadm-down-docker.sh`. En Windows/WSL usa siempre los wrappers `*-in-docker.sh`
+desde una ruta ext4 de la distro.
 
 | | VirtualBox (por defecto) | Docker provider (experimental) |
 |---|---|---|
@@ -289,10 +314,19 @@ usuario sí tienen DNS por nombre de contenedor, y desde el controlador
 `localhost:18080` no es el puerto publicado en el host.
 
 Detalle clave: cuando Vagrant corre dentro del contenedor, `Dir.pwd` es una
-ruta del contenedor que el daemon del host no puede ver. Por eso
+ruta del contenedor que el daemon de Docker no puede ver. Por eso
 `Vagrantfile.kubeadm.docker` acepta `NODE_VOLUME_SOURCE`, que el wrapper fija a
 la ruta real del repo en el host; así los nodos montan `/vagrant` desde la
-ruta correcta.
+ruta correcta. En Windows con Docker Desktop + WSL ese origen debe ser una
+ruta ext4 de WSL (por ejemplo `/home/<usuario>/CDA_chat`), no una ruta
+`/mnt/e/...` ni una unidad Windows: los bind mounts de Docker Desktop solo
+ven el sistema de archivos de la distro WSL. No hace falta `sudo`: el usuario
+debe pertenecer al grupo `docker` y los wrappers `*-in-docker.sh` fijan
+`VAGRANT_DEFAULT_PROVIDER=docker` para que Vagrant no intente usar `cmd.exe`.
+En Docker Desktop el snapshotter de containerd debe ser `native`; con
+`overlayfs` el daemon anidado no puede aplicar whiteouts y los pods de sistema
+entran en `CrashLoopBackOff`. El wrapper debe ejecutarse con
+`CONTAINERD_SNAPSHOTTER=native` (o exportarlo antes).
 
 También es posible prescindir de Vagrant por completo y crear los 3 contenedores
 con `docker run`/`docker compose` + `docker exec`, pero los scripts actuales
@@ -323,8 +357,10 @@ porque ahora el mínimo ya es 2). El escenario 10 de `kubeadm-chaos.sh` repite
 la carga mientras elimina un pod de chat. El resultado real queda en
 `docs/evidence/kubeadm-verify.txt` y `docs/evidence/kubeadm-chaos.txt`.
 
-> Puedes completar aquí los valores observados: réplicas antes/después,
-> `TARGETS`, tiempo hasta el scale-up y CPU por pod.
+Valores observados en la variante Docker (Docker Desktop/WSL, 2026-11-24):
+`TARGETS` `cpu: 110%/60%`, HPA de 2 a 4 réplicas (el máximo) en menos de 2
+minutos con el Job de carga (10 workers, 75 ms de retardo). El detalle completo
+está en `docs/evidence/kubeadm-verify.txt`.
 
 ### 5.2 Suite automática de fallos
 
@@ -353,6 +389,11 @@ En los apagados de nodo se usa `docker stop` / `vagrant stop` y después se
 arranca el nodo; en los borrados de pod se usa `--grace-period=0 --force` para
 no esperar los ~5 minutos del taint de evicción. La evidencia incluye los
 cambios de `mariadb-service` y el estado final de los nodos.
+
+Resultado observado en la variante Docker (2026-11-24): **27 comprobaciones, 0
+fallos**. El failover de MariaDB tardó 171 s en repointar el Service al replica
+y 21 s en volver al primary; bajo carga sostenida el HPA alcanzó las 4 réplicas.
+El detalle está en `docs/evidence/kubeadm-chaos.txt`.
 
 ### 5.3 Puntos únicos de fallo (SPOF) y mejoras
 

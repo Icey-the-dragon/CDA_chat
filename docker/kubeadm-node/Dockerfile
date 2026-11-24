@@ -1,6 +1,10 @@
 FROM debian:bookworm-slim
 
 ARG K8S_MINOR=1.36
+# Docker Desktop's nested containerd cannot unpack overlay whiteouts. Set this
+# to "native" (containerd's vfs-style snapshotter) there; native Linux hosts
+# can keep the faster default overlayfs.
+ARG CONTAINERD_SNAPSHOTTER=overlayfs
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Debian-based Vagrant Docker-provider "node" for the kubeadm lab.
@@ -21,15 +25,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && apt-mark hold kubelet kubeadm kubectl \
   && mkdir -p /etc/containerd \
   && containerd config default > /etc/containerd/config.toml \
-  && sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml \
+  && sed -i 's/SystemdCgroup = true/SystemdCgroup = false/' /etc/containerd/config.toml \
+  && sed -i "s/^\([[:space:]]*\)snapshotter = .*/\1snapshotter = \"${CONTAINERD_SNAPSHOTTER}\"/" /etc/containerd/config.toml \
   && rm -rf /var/lib/apt/lists/*
 
 # The host's swap cannot be turned off from inside a container. kubeadm's
 # preflight is ignored by the scripts, but kubelet also checks swap at runtime.
-# This drop-in loads after kubeadm's 10-kubeadm.conf and disables that check.
-RUN mkdir -p /etc/systemd/system/kubelet.service.d \
-  && printf '[Service]\nEnvironment="KUBELET_EXTRA_ARGS=--fail-swap-on=false"\n' \
-       > /etc/systemd/system/kubelet.service.d/20-swap.conf
+# EnvironmentFile=/etc/default/kubelet wins over Environment= drop-ins, so set
+# the flag there rather than in kubelet.service.d.
+RUN printf 'KUBELET_EXTRA_ARGS=--fail-swap-on=false --cgroup-driver=cgroupfs\n' > /etc/default/kubelet
 
 # SSH access for Vagrant (root password is used by the Docker provider).
 # /run is a tmpfs at runtime, so a tmpfiles entry recreates /run/sshd on boot.
@@ -53,5 +57,4 @@ RUN systemctl mask \
   || true
 
 STOPSIGNAL SIGRTMIN+3
-VOLUME ["/sys/fs/cgroup"]
 CMD ["/sbin/init"]

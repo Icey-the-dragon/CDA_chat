@@ -1,0 +1,77 @@
+============================================================
+ kubeadm lab verification - 2026-11-24 17:01:12 UTC
+============================================================
+
+==> 1. Node state
+NAME                          STATUS   ROLES           AGE     VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE                         KERNEL-VERSION                             CONTAINER-RUNTIME
+kubeadm-docker-controlplane   Ready    control-plane   5m59s   v1.36.6   172.28.0.10   <none>        Debian GNU/Linux 12 (bookworm)   6.6.87.2-microsoft-standard-WSL2 (amd64)   containerd://1.6.20
+kubeadm-docker-worker-app     Ready    <none>          5m6s    v1.36.6   172.28.0.12   <none>        Debian GNU/Linux 12 (bookworm)   6.6.87.2-microsoft-standard-WSL2 (amd64)   containerd://1.6.20
+kubeadm-docker-worker-infra   Ready    <none>          5m6s    v1.36.6   172.28.0.11   <none>        Debian GNU/Linux 12 (bookworm)   6.6.87.2-microsoft-standard-WSL2 (amd64)   containerd://1.6.20
+  [OK]   kubeadm-docker-controlplane is Ready
+  [OK]   kubeadm-docker-worker-infra is Ready
+  [OK]   kubeadm-docker-worker-app is Ready
+
+==> 2. kubelet swap check disabled (host swap cannot be turned off in a container)
+  [OK]   kubeadm-docker-controlplane kubelet ignores host swap (--fail-swap-on=false)
+  [OK]   kubeadm-docker-worker-infra kubelet ignores host swap (--fail-swap-on=false)
+  [OK]   kubeadm-docker-worker-app kubelet ignores host swap (--fail-swap-on=false)
+
+==> 3. CNI (Flannel) pods
+  [OK]   Flannel pod Running
+  [OK]   Flannel pod Running
+  [OK]   Flannel pod Running
+kube-flannel   kube-flannel-ds-dc8vd                                 1/1     Running   0          5m28s
+kube-flannel   kube-flannel-ds-kvnkq                                 1/1     Running   0          6m13s
+kube-flannel   kube-flannel-ds-rmk4h                                 1/1     Running   0          5m28s
+
+==> 3b. Redundant workloads and end-to-end API
+  [OK]   mariadb-primary: at least 1 pod(s) Ready
+  [OK]   mariadb-replica: at least 1 pod(s) Ready
+  [OK]   mariadb-failover: at least 1 pod(s) Ready
+  [OK]   nats: at least 2 pod(s) Ready
+  [OK]   nginx-router: at least 2 pod(s) Ready
+  [OK]   chat-server: at least 2 pod(s) Ready
+  [OK]   mariadb-service points to mariadb-primary
+  [OK]   message POST + GET round-trip succeeded through nginx
+
+==> 4. Scalability: HPA reacts to load
+  [OK]   metrics API is available
+job.batch/chat-loadgen created
+NAME          REFERENCE                TARGETS         MINPODS   MAXPODS   REPLICAS   AGE
+chat-server   Deployment/chat-server   cpu: 110%/60%   2         4         2          5m10s
+NAME                        READY   STATUS    RESTARTS   AGE     IP            NODE                          NOMINATED NODE   READINESS GATES
+chat-server-79b5649-nmpqt   1/1     Running   0          11s     10.244.2.10   kubeadm-docker-worker-app     <none>           <none>
+chat-server-79b5649-qrrwv   1/1     Running   0          4m32s   10.244.2.7    kubeadm-docker-worker-app     <none>           <none>
+chat-server-79b5649-s4k9x   1/1     Running   0          4m13s   10.244.1.10   kubeadm-docker-worker-infra   <none>           <none>
+chat-server-79b5649-xrbfb   0/1     Running   0          11s     10.244.1.13   kubeadm-docker-worker-infra   <none>           <none>
+  [OK]   HPA scaled chat-server from 2 to 4 replicas under load
+
+==> 5. Failure: deleting a chat pod
+  deleting pod: chat-server-79b5649-nmpqt
+Warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.
+NAME                        READY   STATUS    RESTARTS   AGE     IP            NODE                          NOMINATED NODE   READINESS GATES
+chat-server-79b5649-77q9t   1/1     Running   0          5s      10.244.2.11   kubeadm-docker-worker-app     <none>           <none>
+chat-server-79b5649-qrrwv   1/1     Running   0          4m45s   10.244.2.7    kubeadm-docker-worker-app     <none>           <none>
+chat-server-79b5649-s4k9x   1/1     Running   0          4m26s   10.244.1.10   kubeadm-docker-worker-infra   <none>           <none>
+chat-server-79b5649-xrbfb   1/1     Running   0          24s     10.244.1.13   kubeadm-docker-worker-infra   <none>           <none>
+  [OK]   replacement pod chat-server-79b5649-77q9t is Running (Deployment self-healed)
+
+==> 6. Failure: worker node stops (kubelet stopped on app worker: nginx + chat)
+NAME                        STATUS     ROLES    AGE    VERSION
+kubeadm-docker-worker-app   NotReady   <none>   8m2s   v1.36.6
+  [OK]   kubeadm-docker-worker-app became NotReady
+Warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.
+NAME                        READY   STATUS    RESTARTS   AGE     IP            NODE                          NOMINATED NODE   READINESS GATES
+chat-server-79b5649-hqt7l   1/1     Running   0          78s     10.244.2.12   kubeadm-docker-worker-app     <none>           <none>
+chat-server-79b5649-l65qp   1/1     Running   0          78s     10.244.1.14   kubeadm-docker-worker-infra   <none>           <none>
+chat-server-79b5649-qrrwv   1/1     Running   0          6m9s    10.244.2.7    kubeadm-docker-worker-app     <none>           <none>
+chat-server-79b5649-s4k9x   1/1     Running   0          5m50s   10.244.1.10   kubeadm-docker-worker-infra   <none>           <none>
+  [OK]   chat pods rescheduled onto kubeadm-docker-worker-infra
+
+==> 7. Final application check after recovery
+  [OK]   chat API still accepts and returns messages after the failure test
+
+============================================================
+ RESULT: all checks passed.
+ Evidence saved to: docs/evidence/kubeadm-verify.txt
+============================================================

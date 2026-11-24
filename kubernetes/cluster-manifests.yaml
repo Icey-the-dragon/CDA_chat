@@ -602,6 +602,10 @@ metadata:
   name: grafana
 spec:
   replicas: 1
+  # The PVC is ReadWriteOnce, so a rolling update would wait for a second pod
+  # to mount the same volume while the first still holds it.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: grafana
@@ -612,6 +616,24 @@ spec:
     spec:
       nodeSelector:
         role: grafana
+      # hostPath volumes ignore fsGroup: a fresh directory is root:root 0755
+      # and uid 472 cannot create Grafana's data directories. Fix the
+      # ownership once as root before the Grafana container starts.
+      initContainers:
+      - name: init-grafana-data
+        image: busybox:latest
+        command:
+        - sh
+        - -c
+        - chown -R 472:472 /var/lib/grafana && chmod -R g+rwX /var/lib/grafana
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - name: grafana-storage
+          mountPath: /var/lib/grafana
+      # Kept for provisioners that do support ownership management.
+      securityContext:
+        fsGroup: 472
       containers:
       - name: grafana
         image: grafana/grafana:latest

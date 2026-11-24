@@ -114,8 +114,10 @@ echo
 if [[ "${KUBEADM_DOCKER:-0}" == "1" ]]; then
   echo "==> 2. kubelet swap check disabled (host swap cannot be turned off in a container)"
   for node in "${ALL_NODES[@]}"; do
+    # The Docker image sets the flag in /etc/default/kubelet (which wins over
+    # kubelet.service.d because of EnvironmentFile); VirtualBox uses a drop-in.
     if vagrant ssh "$node" -c \
-        'grep -Rqs -- "--fail-swap-on=false" /etc/systemd/system/kubelet.service.d' >/dev/null 2>&1; then
+        'grep -Rqs -- "--fail-swap-on=false" /etc/systemd/system/kubelet.service.d || grep -qs -- "--fail-swap-on=false" /etc/default/kubelet' >/dev/null 2>&1; then
       pass "$node kubelet ignores host swap (--fail-swap-on=false)"
     else
       fail "$node is missing the kubelet swap drop-in"

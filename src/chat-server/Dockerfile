@@ -3,7 +3,7 @@ FROM node:22-alpine AS ui
 WORKDIR /ui
 COPY package*.json ./
 RUN npm ci
-COPY vite.config.ts tsconfig.json ./
+COPY vite.config.ts ./
 COPY frontend/ ./frontend/
 RUN npm run build
 

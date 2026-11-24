@@ -1,0 +1,13 @@
+# Shell scripts and Vagrant/Docker configuration must keep LF endings so the
+# same checkout works on Linux, WSL and Windows (bash rejects CRLF in `set -e`).
+*.sh text eol=lf
+Vagrantfile* text eol=lf
+Dockerfile text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+.gitattributes text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.conf text eol=lf
+*.properties text eol=lf

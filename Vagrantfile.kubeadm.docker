@@ -20,7 +20,9 @@ Vagrant.configure("2") do |config|
 
   config.ssh.username = "root"
   config.ssh.password = "vagrant"
-  config.ssh.insert_key = false
+  # `vagrant ssh -c ...` (used by the up/verify/chaos scripts) requires key
+  # auth; Vagrant injects its generated key into each container on boot.
+  config.ssh.insert_key = true
 
   # Vagrant adds a default 127.0.0.1:2222 -> 22 mapping when has_ssh is true.
   # Disable it: our per-node loopback publish below is enough for ssh_info.
@@ -32,6 +34,9 @@ Vagrant.configure("2") do |config|
   base_create_args = [
     "--cgroupns=host",
     "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
+    # Passed explicitly via create_args because `d.volumes` is not applied when
+    # provider settings are defined in multiple `vm.provider` blocks.
+    "-v", "#{ENV.fetch('NODE_VOLUME_SOURCE', Dir.pwd)}:/vagrant",
     "--tmpfs", "/run:exec,mode=755",
     "--tmpfs", "/run/lock:exec,mode=1777",
     "--tmpfs", "/tmp:exec,mode=1777",
@@ -75,8 +80,28 @@ Vagrant.configure("2") do |config|
       mkdir -p /root/.kube
       cp -f /etc/kubernetes/admin.conf /root/.kube/config
 
+      # Containers cannot write host sysctls. kube-proxy otherwise tries to
+      # tune nf_conntrack_* and CrashLoopBackOff, which also prevents flannel
+      # and CoreDNS from reaching the API service IP.
+      echo "==> [kubeadm/docker] Disabling kube-proxy conntrack sysctl writes..."
+      kubectl -n kube-system get cm kube-proxy -o go-template='{{index .data "config.conf"}}' > /tmp/kube-proxy.conf
+      perl -0pi -e 's/maxPerCore: null/maxPerCore: 0/; s/min: null/min: 0/; s/tcpCloseWaitTimeout: null/tcpCloseWaitTimeout: 0s/; s/tcpEstablishedTimeout: null/tcpEstablishedTimeout: 0s/' /tmp/kube-proxy.conf
+      kubectl -n kube-system create cm kube-proxy --from-file=config.conf=/tmp/kube-proxy.conf --dry-run=client -o yaml | kubectl apply -f -
+
+      # Docker's embedded DNS makes CoreDNS detect a loop on its own address.
+      echo "==> [kubeadm/docker] Removing the CoreDNS loop plugin..."
+      kubectl -n kube-system get cm coredns -o go-template='{{index .data "Corefile"}}' > /tmp/Corefile
+      sed -i '/^[[:space:]]*loop$/d' /tmp/Corefile
+      kubectl -n kube-system create cm coredns --from-file=Corefile=/tmp/Corefile --dry-run=client -o yaml | kubectl apply -f -
+
+      kubectl -n kube-system delete pod -l k8s-app=kube-proxy --wait=false
+      kubectl -n kube-system delete pod -l k8s-app=kube-dns --wait=false
+
       echo "==> [kubeadm/docker] Installing Flannel CNI..."
       kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+      kubectl -n kube-flannel rollout status ds/kube-flannel-ds --timeout=180s
+      kubectl -n kube-system rollout status ds/kube-proxy --timeout=180s
+      kubectl -n kube-system rollout status deploy/coredns --timeout=180s
     SHELL
   end
 

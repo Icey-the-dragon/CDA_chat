@@ -28,8 +28,16 @@ running after the controller exits.
 `docker` group or use `sudo`); because the scripts mount `/var/run/docker.sock`
 and run `--privileged` containers, this is effectively root-level access.
 
+On Windows with Docker Desktop + WSL, run the scripts from an ext4 path inside
+the distro (for example `~/CDA_chat`), not from `/mnt/e/...`: Docker Desktop
+cannot bind-mount Windows/DrvFs paths into sibling containers. The wrappers
+already set `NODE_VOLUME_SOURCE` and `VAGRANT_DEFAULT_PROVIDER=docker`, so a
+user in the `docker` group does not need `sudo`. On Docker Desktop also pass
+`CONTAINERD_SNAPSHOTTER=native` because nested overlayfs whiteouts are not
+supported.
+
 ```bash
-bash scripts/kubeadm-in-docker.sh                       # build controller + start lab
+CONTAINERD_SNAPSHOTTER=native bash scripts/kubeadm-in-docker.sh  # build + start (native on Docker Desktop)
 bash scripts/kubeadm-verify-in-docker.sh                # swap/CNI/Ready + HPA + pod/worker failures
 bash scripts/kubeadm-chaos-in-docker.sh                 # 11 automated fault scenarios + checks
 bash scripts/kubeadm-controlplane-failure-in-docker.sh  # optional: stop the control plane
@@ -49,8 +57,11 @@ the other URL; the chaos suite tries both automatically.
 What the scripts do:
 
 1. Build `cda-vagrant-controller` (Vagrant + Docker CLI + SSH client).
-2. Build `cda-kubeadm-node` (Debian + containerd + kubelet/kubeadm/kubectl, with
-   `KUBELET_EXTRA_ARGS=--fail-swap-on=false`). `K8S_MINOR` is a build arg.
+2. Build `cda-kubeadm-node` (Debian + containerd + kubelet/kubeadm/kubectl). The
+   Docker variant uses `--cgroup-driver=cgroupfs` with `SystemdCgroup = false`
+   because the nodes share the host cgroup namespace, and sets
+   `KUBELET_EXTRA_ARGS=--fail-swap-on=false`. `K8S_MINOR` and
+   `CONTAINERD_SNAPSHOTTER` are build args.
 3. Create the isolated network `cda-kubeadm` (`172.28.0.0/16`).
 4. Start 3 containers with static IPs on that LAN — no default `bridge`:
 

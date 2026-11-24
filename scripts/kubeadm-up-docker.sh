@@ -44,6 +44,7 @@ docker network inspect cda-kubeadm >/dev/null 2>&1 || \
 echo "==> Building node image ${KUBEADM_NODE_IMAGE} (K8s v${K8S_MINOR})..."
 docker build \
   --build-arg "K8S_MINOR=${K8S_MINOR}" \
+  --build-arg "CONTAINERD_SNAPSHOTTER=${CONTAINERD_SNAPSHOTTER:-overlayfs}" \
   -t "$KUBEADM_NODE_IMAGE" \
   docker/kubeadm-node
 
@@ -87,6 +88,8 @@ fi
 kube rollout status deployment/metrics-server -n kube-system --timeout=180s
 
 echo "==> Applying application manifests..."
+# Plain kubeadm has no dynamic provisioner; these hostPath PVs back the PVCs.
+kube apply -f /vagrant/kubernetes/kubeadm/storage.yaml
 kube apply -f /vagrant/kubernetes/cluster-manifests.yaml -f /vagrant/kubernetes/nginx-configmap.yaml
 
 # Replace the single-instance base MariaDB/NATS with kubeadm HA variants.
@@ -107,6 +110,12 @@ kube patch deployment/nginx-router --type=json \
 # Spread the redundant replicas across the two workers.
 kube patch deployment/chat-server --type=json \
   -p '[{"op":"add","path":"/spec/template/spec/affinity","value":{"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":100,"podAffinityTerm":{"labelSelector":{"matchExpressions":[{"key":"app","operator":"In","values":["chat-server"]}]},"topologyKey":"kubernetes.io/hostname"}}]}}}]'
+# Keep the two nginx pods on different workers. A hard anti-affinity plus the
+# default maxSurge=1 deadlocks the 1 -> 2 replica rollout on only two workers:
+# the old pod occupies one node and the surge pod cannot be placed on the other.
+# maxSurge=0 removes the old pod before creating the replacement.
+kube patch deployment/nginx-router --type=json \
+  -p '[{"op":"replace","path":"/spec/strategy","value":{"type":"RollingUpdate","rollingUpdate":{"maxSurge":0,"maxUnavailable":1}}}]'
 kube patch deployment/nginx-router --type=json \
   -p '[{"op":"add","path":"/spec/template/spec/affinity","value":{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"labelSelector":{"matchExpressions":[{"key":"app","operator":"In","values":["nginx-router"]}]},"topologyKey":"kubernetes.io/hostname"}]}}}]'
 
