@@ -7,4 +7,5 @@ node_modules/
 .env
 *.log
 chat-server.tar
+cda-demo-bundle.zip
 src/chat-server/public/
