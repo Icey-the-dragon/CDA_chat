@@ -1,3 +1,13 @@
+# ---- 1. Build the React UI (Vite + Tailwind) ----
+FROM node:22-alpine AS ui
+WORKDIR /ui
+COPY package*.json ./
+RUN npm ci
+COPY vite.config.ts tsconfig.json ./
+COPY frontend/ ./frontend/
+RUN npm run build
+
+# ---- 2. Runtime: only the server and the built static assets ----
 FROM node:22-alpine
 
 ENV NODE_ENV=production \
@@ -8,7 +18,9 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-COPY . .
+COPY server.js loadgen.js ./
+COPY lib/ ./lib/
+COPY --from=ui /ui/public/ ./public/
 
 USER node
 
