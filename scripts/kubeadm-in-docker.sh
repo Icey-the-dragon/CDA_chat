@@ -43,8 +43,9 @@ docker run --rm -i \
   bash -lc 'bash scripts/kubeadm-up-docker.sh'
 
 echo
-echo "kubeadm lab is up. The controller container has exited; the 5 node"
-echo "containers keep running on the host Docker daemon."
+echo "kubeadm lab is up. The controller container has exited; the 3 node"
+echo "containers (1 control-plane + 2 workers) keep running on the host Docker daemon."
 echo
 echo "  Verify:   bash scripts/kubeadm-verify-in-docker.sh"
+echo "  Chaos:    bash scripts/kubeadm-chaos-in-docker.sh"
 echo "  Teardown: bash scripts/kubeadm-down-in-docker.sh"

@@ -2,11 +2,11 @@
 
 CDA Chat is a small Kubernetes lab: a Node.js chat app (web UI + REST API + WebSocket) backed by MariaDB and NATS, with Prometheus, Grafana, and an nginx edge router.
 
-- **Chat replicas** scale from 1 to 3 via a CPU-based HPA and share messages/presence through NATS (MariaDB stores history).
-- **Stateful/edge services** (MariaDB, NATS, Prometheus, Grafana, nginx) stay fixed.
+- **Chat replicas** scale from 2 to 4 via a CPU-based HPA and share messages/presence through a two-server NATS cluster (MariaDB stores history).
+- In the kubeadm lab, **MariaDB, NATS and nginx are redundant**: each worker runs one instance, and a controller repoints `mariadb-service` to the survivor if the primary fails. Prometheus/Grafana remain single-instance (observability only).
 
 ```
-Browser -> nginx (:80 / host 18080 in the kubeadm lab, 8080 in k3d)
+Browser -> nginx (:80 / host 18080 or 18081 in the kubeadm lab, 8080 in k3d)
              ├─ /           -> chat-server-service:8080 (UI)
              ├─ /api/       -> chat-server-service:8080 (REST)
              ├─ /ws/        -> chat-server-service:8080 (WebSocket)
@@ -19,8 +19,9 @@ chat-server replicas -> nats-service:4222 and mariadb-service:3306
 
 The supported way to run the kubeadm lab uses **Docker only**. Vagrant is not
 installed on the host: it lives in a small controller container that talks to
-the host Docker daemon through `/var/run/docker.sock`. The five cluster nodes
-are created as sibling containers and keep running after the controller exits.
+the host Docker daemon through `/var/run/docker.sock`. The three cluster nodes
+(**1 control-plane + 2 workers**) are created as sibling containers and keep
+running after the controller exits.
 
 **Prerequisite:** Docker. Nothing else — no Vagrant, no VirtualBox, no host
 `kubectl`. Your user must be able to talk to the Docker daemon (be in the
@@ -30,15 +31,20 @@ and run `--privileged` containers, this is effectively root-level access.
 ```bash
 bash scripts/kubeadm-in-docker.sh                       # build controller + start lab
 bash scripts/kubeadm-verify-in-docker.sh                # swap/CNI/Ready + HPA + pod/worker failures
+bash scripts/kubeadm-chaos-in-docker.sh                 # 11 automated fault scenarios + checks
 bash scripts/kubeadm-controlplane-failure-in-docker.sh  # optional: stop the control plane
 bash scripts/kubeadm-down-in-docker.sh                  # teardown
 ```
 
 | Service | URL |
 | --- | --- |
-| Chat web UI | <http://localhost:18080/> |
+| Chat web UI (infra worker) | <http://localhost:18080/> |
+| Chat web UI (app worker) | <http://localhost:18081/> |
 | Grafana | <http://localhost:18080/grafana/> |
 | Chat health | <http://localhost:18080/api/health> |
+
+Both host ports reach the same NodePort Service. If one worker is stopped, use
+the other URL; the chaos suite tries both automatically.
 
 What the scripts do:
 
@@ -46,22 +52,23 @@ What the scripts do:
 2. Build `cda-kubeadm-node` (Debian + containerd + kubelet/kubeadm/kubectl, with
    `KUBELET_EXTRA_ARGS=--fail-swap-on=false`). `K8S_MINOR` is a build arg.
 3. Create the isolated network `cda-kubeadm` (`172.28.0.0/16`).
-4. Start 5 containers with static IPs on that LAN — no default `bridge`:
+4. Start 3 containers with static IPs on that LAN — no default `bridge`:
 
-   | Node | IP |
-   | --- | --- |
-   | controlplane | `172.28.0.10` |
-   | grafana | `172.28.0.11` |
-   | db | `172.28.0.12` |
-   | chat | `172.28.0.13` |
-   | nginx | `172.28.0.14` |
+   | Node | IP | Services |
+   | --- | --- | --- |
+   | controlplane | `172.28.0.10` | API, etcd, scheduler, MariaDB failover controller |
+   | infra | `172.28.0.11` | MariaDB primary, Prometheus, Grafana, nginx/NATS/chat |
+   | app | `172.28.0.12` | MariaDB replica, nginx, NATS, chat-server, load generator |
 
-   The controller container itself is `172.28.0.2`. Vagrant SSH is forced to
-   use these LAN IPs instead of a host port; the only published SSH bindings
-   are loopback-only (`127.0.0.1:2201-2205`) and exist solely because Vagrant's
-   Docker provider needs one to report SSH info.
+   Both workers carry `workload=chat`, `edge=nginx` and `nats=enabled`, so chat,
+   nginx and the event bus survive the loss of either worker. The controller
+   container itself is `172.28.0.2`. Vagrant
+   SSH is forced to use these LAN IPs instead of a host port; the only published
+   SSH bindings are loopback-only (`127.0.0.1:2201-2203`) and exist solely
+   because Vagrant's Docker provider needs one to report SSH info.
 
-5. Run `kubeadm init` / `kubeadm join`, install Flannel, apply the app manifests.
+5. Run `kubeadm init` / `kubeadm join`, install Flannel and `metrics-server`,
+   then apply the app manifests.
 6. Keep Vagrant state in `.vagrant-kubeadm-docker/` and generated join data in
    `.kubeadm/` (both git-ignored).
 
@@ -99,7 +106,7 @@ Evidence from the checks is written to `docs/evidence/*.txt`.
 | --- | --- | --- |
 | Docker only | `bash scripts/kubeadm-in-docker.sh` | Docker via controller container (**recommended**) |
 | Vagrant + Docker | `bash scripts/kubeadm-up-docker.sh` | Docker directly |
-| Vagrant + VirtualBox | `bash scripts/kubeadm-up.sh` | Debian bookworm VMs (`192.168.56.20-24`) |
+| Vagrant + VirtualBox | `bash scripts/kubeadm-up.sh` | Debian bookworm VMs (`192.168.56.20-22`) |
 
 Privileges on the host, per variant:
 
@@ -114,12 +121,14 @@ Privileges on the host, per variant:
 - **Docker only (controller container):** same Docker access requirement; no
   Vagrant needed on the host.
 
-The `kubeadm-verify.sh` and `kubeadm-controlplane-failure.sh` scripts are shared
-by all three variants. Select the Docker lab with `KUBEADM_DOCKER=1` (the
-`*-in-docker.sh` wrappers do this for you):
+The `kubeadm-verify.sh`, `kubeadm-chaos.sh` and
+`kubeadm-controlplane-failure.sh` scripts are shared by all three variants.
+Select the Docker lab with `KUBEADM_DOCKER=1` (the `*-in-docker.sh` wrappers do
+this for you):
 
 ```bash
 KUBEADM_DOCKER=1 bash scripts/kubeadm-verify.sh
+KUBEADM_DOCKER=1 bash scripts/kubeadm-chaos.sh
 KUBEADM_DOCKER=1 bash scripts/kubeadm-controlplane-failure.sh
 ```
 
@@ -135,8 +144,9 @@ scaling and failure analysis: [`docs/KUBEADM_LAB.md`](docs/KUBEADM_LAB.md).
 - `kubernetes/demo/load-generator.yaml` – optional HPA load Job
 - `docker/kubeadm-node/Dockerfile` – kubeadm node image (Debian + K8s tools)
 - `docker/vagrant-controller/Dockerfile` – Vagrant controller image for Docker-only hosts
-- `Vagrantfile.kubeadm.docker` – 1 control-plane + 4 workers as Docker containers
-- `Vagrantfile.kubeadm` – same topology as VirtualBox VMs (Debian bookworm)
+- `Vagrantfile.kubeadm.docker` – 1 control-plane + 2 workers as Docker containers
+- `Vagrantfile.kubeadm` – same 3-node topology as VirtualBox VMs (Debian bookworm)
+- `kubernetes/kubeadm/` – kubeadm-only HA overlays (NATS cluster, MariaDB pair + failover controller) and Prometheus ConfigMaps (IPs or Docker DNS)
 - `scripts/kubeadm-*.sh` – start / verify / failure tests / teardown
 - `docs/KUBEADM_LAB.md` – architecture and analysis
 - `k3d-cluster.yaml`, `Vagrantfile`, `Vagrantfile.docker` – original k3d/k3s labs (below)

@@ -1,8 +1,10 @@
 # Parallel kubeadm lab for CDA Chat.
 #
-# Same 1 master + 4 workers topology as the default Vagrant/k3s lab, but built
-# with kubeadm instead of k3s. It uses 192.168.56.20-24 so it can coexist with
-# the existing k3s lab (192.168.56.10-14).
+# Topology required by the assignment: 1 master (control-plane) + 2 workers.
+# The two workers consolidate the services that used to live on four nodes:
+#   - kubeadm-worker-infra: MariaDB + Prometheus + Grafana (+ chat fallback)
+#   - kubeadm-worker-app:   nginx edge + chat-server (+ load generator)
+# It uses 192.168.56.20-22 so it can coexist with the k3s lab (192.168.56.10-14).
 #
 # Use the helpers in scripts/ so VAGRANT_DOTFILE_PATH and VAGRANT_VAGRANTFILE
 # are set correctly:
@@ -109,14 +111,14 @@ EOF
   end
 
   # ----------------------------------------------------------------- workers
-  # `workload=chat` is added by scripts/kubeadm-up.sh to the chat and nginx
-  # workers so chat pods can be rescheduled if one of them fails.
+  # Both workers get `workload=chat` and import the image, so chat pods can be
+  # rescheduled to the surviving worker when one of them fails. The other
+  # labels are applied by scripts/kubeadm-up.sh.
   nodes = {
-    "kubeadm-worker-grafana" => { ip: "192.168.56.21", role: "grafana", memory: "768",  cpus: 1 },
-    "kubeadm-worker-db"      => { ip: "192.168.56.22", role: "db",      memory: "1024", cpus: 1 },
-    "kubeadm-worker-chat"    => { ip: "192.168.56.23", role: "chat",    memory: "1536", cpus: 2, chat_image: true },
-    "kubeadm-worker-nginx"   => { ip: "192.168.56.24", role: "nginx",   memory: "768",  cpus: 1, chat_image: true,
-                                  forward_port: 18080 }
+    "kubeadm-worker-infra" => { ip: "192.168.56.21", role: "db", memory: "2048", cpus: 2,
+                                chat_image: true, forward_port: 18080 },
+    "kubeadm-worker-app"   => { ip: "192.168.56.22", role: "chat", memory: "2048", cpus: 2,
+                                chat_image: true, forward_port: 18081 }
   }
 
   nodes.each do |name, info|

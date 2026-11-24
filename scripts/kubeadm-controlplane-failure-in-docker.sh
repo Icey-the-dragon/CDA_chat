@@ -10,7 +10,8 @@ cd "$ROOT_DIR"
 IMAGE="${VAGRANT_CONTROLLER_IMAGE:-cda-vagrant-controller}"
 NETWORK="cda-kubeadm"
 CONTROLLER_IP="172.28.0.2"
-NGINX_CONTAINER="kubeadm-docker-worker-nginx"
+APP_CONTAINER="kubeadm-docker-worker-app"
+INFRA_CONTAINER="kubeadm-docker-worker-infra"
 
 if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
   echo "Error: Docker network '${NETWORK}' does not exist. Run scripts/kubeadm-in-docker.sh first." >&2
@@ -25,6 +26,6 @@ docker run --rm -i \
   -e NODE_VOLUME_SOURCE="$ROOT_DIR" \
   -e VAGRANT_DOTFILE_PATH=/workspace/.vagrant-kubeadm-docker \
   -e KUBEADM_DOCKER=1 \
-  -e HEALTH_URL="http://${NGINX_CONTAINER}:30080/api/health" \
+  -e HEALTH_URLS="http://${APP_CONTAINER}:30080/api/health,http://${INFRA_CONTAINER}:30080/api/health" \
   "$IMAGE" \
   bash -lc 'bash scripts/kubeadm-controlplane-failure.sh "$@"' _ "$@"

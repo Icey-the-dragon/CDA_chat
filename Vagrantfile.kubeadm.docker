@@ -1,6 +1,7 @@
 # kubeadm lab using Vagrant's Docker provider on an ISOLATED user-defined network.
 #
-# The 5 nodes get static IPs in 172.28.0.0/16 and are NOT attached to Docker's
+# Topology required by the assignment: 1 master (control-plane) + 2 workers.
+# The 3 nodes get static IPs in 172.28.0.0/16 and are NOT attached to Docker's
 # default bridge, so they behave like real machines on their own LAN.
 #
 # Vagrant's Docker provider normally reads NetworkSettings.IPAddress to find
@@ -80,14 +81,15 @@ Vagrant.configure("2") do |config|
   end
 
   # ----------------------------------------------------------------- workers
+  # The two workers consolidate the app services. Both get `workload=chat` and
+  # import the image so chat can move to the survivor on a worker failure.
   nodes = {
-    "kubeadm-docker-worker-grafana" => { ip: "172.28.0.11", ssh: 2202, role: "grafana" },
-    "kubeadm-docker-worker-db"      => { ip: "172.28.0.12", ssh: 2203, role: "db" },
-    "kubeadm-docker-worker-chat"    => { ip: "172.28.0.13", ssh: 2204, role: "chat",
-                                         chat_image: true },
-    "kubeadm-docker-worker-nginx"   => { ip: "172.28.0.14", ssh: 2205, role: "nginx",
-                                         chat_image: true,
-                                         host_port: 18080, container_port: 30080 },
+    "kubeadm-docker-worker-infra" => { ip: "172.28.0.11", ssh: 2202, role: "db",
+                                       chat_image: true,
+                                       host_port: 18080, container_port: 30080 },
+    "kubeadm-docker-worker-app"   => { ip: "172.28.0.12", ssh: 2203, role: "chat",
+                                       chat_image: true,
+                                       host_port: 18081, container_port: 30080 },
   }
 
   nodes.each do |name, info|

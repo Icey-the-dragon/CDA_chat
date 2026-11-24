@@ -2,6 +2,7 @@
 set -euo pipefail
 
 # Faster (experimental) kubeadm lab using Vagrant's Docker provider.
+# Topology: 1 control-plane + 2 workers (services consolidated on the workers).
 # The host needs Vagrant + Docker only; kubectl runs inside the control-plane.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,10 +23,8 @@ done
 
 CP="${KUBEADM_PREFIX}-controlplane"
 WORKERS=(
-  "${KUBEADM_PREFIX}-worker-grafana"
-  "${KUBEADM_PREFIX}-worker-db"
-  "${KUBEADM_PREFIX}-worker-chat"
-  "${KUBEADM_PREFIX}-worker-nginx"
+  "${KUBEADM_PREFIX}-worker-infra"
+  "${KUBEADM_PREFIX}-worker-app"
 )
 
 kube() {
@@ -73,44 +72,80 @@ echo "==> Labeling nodes..."
 kube label node "$CP" role=control-plane --overwrite
 kube taint node "$CP" node-role.kubernetes.io/control-plane:NoSchedule- >/dev/null 2>&1 || true
 kube taint node "$CP" node-role.kubernetes.io/master:NoSchedule- >/dev/null 2>&1 || true
-kube label node "${KUBEADM_PREFIX}-worker-grafana" role=grafana --overwrite
-kube label node "${KUBEADM_PREFIX}-worker-db" role=db --overwrite
-kube label node "${KUBEADM_PREFIX}-worker-chat" role=chat workload=chat --overwrite
-kube label node "${KUBEADM_PREFIX}-worker-nginx" role=nginx workload=chat --overwrite
+kube label node "${KUBEADM_PREFIX}-worker-infra" role=db monitoring=grafana edge=nginx nats=enabled workload=chat --overwrite
+kube label node "${KUBEADM_PREFIX}-worker-app" role=chat edge=nginx nats=enabled workload=chat --overwrite
+
+echo "==> Installing metrics-server (required by the HPA v2)..."
+kube apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+if ! kube get deployment metrics-server -n kube-system \
+    -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null \
+    | grep -q -- '--kubelet-insecure-tls'; then
+  kube patch deployment metrics-server -n kube-system --type=json \
+    -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]' \
+    >/dev/null
+fi
+kube rollout status deployment/metrics-server -n kube-system --timeout=180s
 
 echo "==> Applying application manifests..."
 kube apply -f /vagrant/kubernetes/cluster-manifests.yaml -f /vagrant/kubernetes/nginx-configmap.yaml
+
+# Replace the single-instance base MariaDB/NATS with kubeadm HA variants.
+kube delete deployment/mariadb deployment/nats --ignore-not-found=true >/dev/null 2>&1 || true
+kube apply -f /vagrant/kubernetes/kubeadm/nats.yaml \
+           -f /vagrant/kubernetes/kubeadm/mariadb-ha.yaml
+kube patch service mariadb-service \
+  -p '{"spec":{"selector":{"app":"mariadb-primary"}}}'
+
 kube patch deployment/chat-server --type=json \
   -p '[{"op":"replace","path":"/spec/template/spec/nodeSelector","value":{"workload":"chat"}}]'
+kube patch deployment/prometheus --type=json \
+  -p '[{"op":"replace","path":"/spec/template/spec/nodeSelector","value":{"monitoring":"grafana"}}]'
+kube patch deployment/grafana --type=json \
+  -p '[{"op":"replace","path":"/spec/template/spec/nodeSelector","value":{"monitoring":"grafana"}}]'
+kube patch deployment/nginx-router --type=json \
+  -p '[{"op":"replace","path":"/spec/template/spec/nodeSelector","value":{"edge":"nginx"}}]'
+# Spread the redundant replicas across the two workers.
+kube patch deployment/chat-server --type=json \
+  -p '[{"op":"add","path":"/spec/template/spec/affinity","value":{"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":100,"podAffinityTerm":{"labelSelector":{"matchExpressions":[{"key":"app","operator":"In","values":["chat-server"]}]},"topologyKey":"kubernetes.io/hostname"}}]}}}]'
+kube patch deployment/nginx-router --type=json \
+  -p '[{"op":"add","path":"/spec/template/spec/affinity","value":{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"labelSelector":{"matchExpressions":[{"key":"app","operator":"In","values":["nginx-router"]}]},"topologyKey":"kubernetes.io/hostname"}]}}}]'
 
-# Keep the base Prometheus config: its static node targets point at the k3s
-# lab IPs and simply won't resolve here, while pod scraping/HPA still work.
-kube get configmap prometheus-config -o jsonpath='{.data.prometheus\.yml}' > .kubeadm/prometheus.yml
-vagrant ssh "$CP" -c 'cat > /tmp/prometheus.yml' < .kubeadm/prometheus.yml
-kube create configmap prometheus-config \
-  --from-file=prometheus.yml=/tmp/prometheus.yml --dry-run=client -o yaml | kube apply -f -
+# Two chat/nginx replicas from the start: one per worker. HPA can reach 4.
+kube patch hpa chat-server --type=json \
+  -p '[{"op":"replace","path":"/spec/minReplicas","value":2},{"op":"replace","path":"/spec/maxReplicas","value":4}]'
+kube scale deployment/chat-server --replicas=2 >/dev/null
+kube scale deployment/nginx-router --replicas=2 >/dev/null
+
+# Docker's user-defined network resolves node names, so use DNS targets here.
+# Restart the pod so Prometheus picks up the mounted ConfigMap immediately.
+kube apply -f /vagrant/kubernetes/kubeadm/prometheus-config-docker.yaml
+kube delete pod -l app=prometheus --wait=false --ignore-not-found >/dev/null 2>&1 || true
 
 kube set env deployment/grafana GF_SERVER_ROOT_URL="http://localhost:18080/grafana/"
 
-echo "==> Waiting for core deployments..."
-for deploy in mariadb nats chat-server prometheus grafana nginx-router; do
+echo "==> Waiting for core workloads..."
+for deploy in mariadb-primary mariadb-replica mariadb-failover chat-server prometheus grafana nginx-router; do
   kube rollout status "deployment/${deploy}" --timeout=300s || \
     echo "Warning: deployment/${deploy} not ready yet (check: vagrant ssh ${CP} -c 'sudo kubectl get pods -o wide')"
 done
+kube rollout status statefulset/nats --timeout=300s || \
+  echo "Warning: NATS StatefulSet not ready yet"
 
 echo
-kube get nodes -L role,workload -o wide
+kube get nodes -L role,workload,monitoring,edge,nats -o wide
 echo
 kube get pods -o wide
 
 cat <<EOF
 
-kubeadm Docker lab is up (experimental).
+kubeadm Docker lab is up (experimental: 1 control-plane + ${#WORKERS[@]} workers).
 
-  Chat UI:      http://localhost:18080/
+  Chat UI:      http://localhost:18080/  (infra worker)
+                http://localhost:18081/  (app worker)
   Grafana:      http://localhost:18080/grafana/
   kubeconfig:   /etc/kubernetes/admin.conf (inside ${CP})
 
   Verify:       KUBEADM_DOCKER=1 bash scripts/kubeadm-verify.sh
+  Chaos:        KUBEADM_DOCKER=1 bash scripts/kubeadm-chaos.sh
   Teardown:     bash scripts/kubeadm-down-docker.sh
 EOF

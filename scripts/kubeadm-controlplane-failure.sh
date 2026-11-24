@@ -55,11 +55,22 @@ fi
 
 echo
 echo "==> Workloads keep running without the control plane"
-HEALTH_URL="${HEALTH_URL:-http://localhost:18080/api/health}"
-if curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; then
-  pass "chat application still serves traffic (${HEALTH_URL})"
+# Both workers expose the NodePort to the host (18080/18081). Inside the
+# controller container those host ports do not exist, so container DNS URLs are
+# included as fallbacks.
+HEALTH_URLS="${HEALTH_URLS:-${HEALTH_URL:-http://localhost:18080/api/health,http://localhost:18081/api/health}}"
+IFS=', ' read -r -a health_urls <<< "$HEALTH_URLS"
+serving_url=""
+for url in "${health_urls[@]}"; do
+  if curl -fsS --max-time 5 "$url" >/dev/null 2>&1; then
+    serving_url="$url"
+    break
+  fi
+done
+if [ -n "$serving_url" ]; then
+  pass "chat application still serves traffic (${serving_url})"
 else
-  fail "chat application did not answer at ${HEALTH_URL}"
+  fail "chat application did not answer at any of: ${HEALTH_URLS}"
 fi
 
 echo

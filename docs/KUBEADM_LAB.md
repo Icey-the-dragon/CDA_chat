@@ -1,14 +1,15 @@
-# Laboratorio paralelo con kubeadm (1 master + 4 workers)
+# Laboratorio paralelo con kubeadm (1 master + 2 workers)
 
 Este documento describe el entorno **kubeadm** añadido en paralelo al setup
 actual (k3d / Vagrant+k3s). No modifica ni reemplaza esos setups: usa otras IPs,
-otro puerto de host y un directorio de estado de Vagrant distinto.
+otro puerto de host y un directorio de estado de Vagrant distinto. Cumple la
+topología pedida en la práctica: **un nodo máster y dos nodos esclavos**.
 
 | Entorno | Herramienta | Nodos | Puerto chat | Estado Vagrant |
 |---|---|---|---|---|
 | Actual (k3d) | k3s en contenedores Docker | 1 server + 4 agents | 8080 | – |
 | Actual (Vagrant) | k3s en VMs | 1 master + 4 workers | 8080 | `.vagrant/` |
-| **Nuevo (este doc)** | **kubeadm sobre VMs Ubuntu** | **1 control-plane + 4 workers** | **18080** | `.vagrant-kubeadm/` |
+| **Nuevo (este doc)** | **kubeadm sobre Debian bookworm** | **1 control-plane + 2 workers** | **18080** | `.vagrant-kubeadm/` |
 
 ---
 
@@ -24,7 +25,7 @@ clúster. Separa dos tipos de nodos:
   - `kube-controller-manager`: controladores (Deployments, ReplicaSets, nodos, etc.).
   - `cloud-controller-manager` (no usado en este laboratorio local).
 - **Worker nodes**: ejecutan los pods.
-  - `kubelet`: agente que arranca contenedores through el CRI y reporta al API.
+  - `kubelet`: agente que arranca contenedores a través del CRI y reporta al API.
   - `kube-proxy`: reglas de red para los Services.
   - Container runtime: **containerd** en este laboratorio.
 
@@ -42,47 +43,91 @@ Objetos usados por la aplicación: `Deployment`, `ReplicaSet`, `Pod`, `Service`,
 
 ## 2. Arquitectura del laboratorio
 
+Con solo dos workers, cada worker concentra varias responsabilidades y los
+servicios críticos están duplicados. Se usan etiquetas adicionales
+(`monitoring`, `edge`, `workload`, `nats`) para no sobrecargar la clave `role`,
+que los manifiestos originales usan para un único valor.
+
 ```
-                      host (VirtualBox / Vagrant)
-                      puerto 18080 -> 30080
+                    host (VirtualBox / Vagrant / Docker)
+             18080 (worker infra)      18081 (worker app)
+                    |                        |
+            +-------+------+          +-------+------+
+            | nginx-router |          | nginx-router |   edge=nginx
+            +-------+------+          +-------+------+
+                    +---------+--------+
                               |
-                    +---------------------+
-                    |  nginx-router pod   |  role=nginx
-                    +----------+----------+
-                               |
-        +----------------------+----------------------+
-        |                      |                      |
-  chat-server pods      MariaDB + PVC         Prometheus + Grafana
-  (HPA 1..3)             role=db               role=grafana
-  workload=chat
-        |
-  NATS (event bus)  --- control-plane (role=control-plane, sin taint)
+                  chat-server-service:8080 -> chat pods (2..4)
+                         workload=chat (ambos workers)
                               |
-                    +---------+----------+
-                    |  API + etcd + scheduler + CM |
-                    +-----------------------------+
+              +---------------+----------------+
+              |                                |
+      nats-service:4222                 mariadb-service:3306
+      StatefulSet (2 pods)              -> mariadb-primary o mariadb-replica
+      nats=enabled (ambos workers)         (controlador de failover)
+              |                                |
+      +-------+-------+                +-------+--------+
+      | NATS en infra |                | MariaDB primary| infra (role=db)
+      +---------------+                +----------------+
+      | NATS en app   |                | MariaDB replica| app (role=chat)
+      +---------------+                +----------------+
+
+            control-plane: API + etcd + scheduler + controller-manager
+                           + mariadb-failover (sin taint NoSchedule)
+                           Prometheus/Grafana solo en infra (observabilidad)
 ```
 
 ### Nodos
 
-| VM | IP | Rol kubeadm | Etiquetas | Memoria / CPU |
-|---|---|---|---|---|
-| `kubeadm-controlplane` | 192.168.56.20 | control-plane | `role=control-plane` | 2048 MB / 2 |
-| `kubeadm-worker-grafana` | 192.168.56.21 | worker | `role=grafana` | 1024 MB / 1 |
-| `kubeadm-worker-db` | 192.168.56.22 | worker | `role=db` | 1536 MB / 1 |
-| `kubeadm-worker-chat` | 192.168.56.23 | worker | `role=chat`, `workload=chat` | 1536 MB / 2 |
-| `kubeadm-worker-nginx` | 192.168.56.24 | worker | `role=nginx`, `workload=chat` | 1024 MB / 1 |
+| VM | IP | Rol kubeadm | Etiquetas | Servicios | Memoria / CPU |
+|---|---|---|---|---|---|
+| `kubeadm-controlplane` | 192.168.56.20 | control-plane | `role=control-plane` | API, etcd, scheduler, controller-manager, `mariadb-failover` | 1536 MB / 2 |
+| `kubeadm-worker-infra` | 192.168.56.21 | worker | `role=db`, `monitoring=grafana`, `edge=nginx`, `nats=enabled`, `workload=chat` | MariaDB primary, Prometheus, Grafana, nginx, NATS, chat | 2048 MB / 2 |
+| `kubeadm-worker-app` | 192.168.56.22 | worker | `role=chat`, `edge=nginx`, `nats=enabled`, `workload=chat` | MariaDB replica, nginx, NATS, chat, load-generator | 2048 MB / 2 |
 
-Se añade `workload=chat` a dos workers y se parchea el `nodeSelector` del
-Deployment `chat-server` para que use esa etiqueta. Así los pods de chat pueden
-reubicarse si falla el worker de chat. Los manifiestos compartidos
-(`kubernetes/cluster-manifests.yaml`) no se modifican: el cambio se aplica solo
-a este clúster desde `scripts/kubeadm-up.sh`.
+La variante Docker usa las mismas funciones con otras IPs:
 
-Detalles de red: CNI Flannel con `--pod-network-cidr=10.244.0.0/16`;
-containerd con `SystemdCgroup = true`; swap desactivada vía `swapoff -a` y
-comentando `/etc/fstab` en **todos** los nodos; versión de Kubernetes
-configurable con `K8S_MINOR` (por defecto `1.36`).
+| Contenedor | IP | SSH (loopback) |
+|---|---|---|
+| `kubeadm-docker-controlplane` | `172.28.0.10` | `127.0.0.1:2201` |
+| `kubeadm-docker-worker-infra` | `172.28.0.11` | `127.0.0.1:2202` |
+| `kubeadm-docker-worker-app` | `172.28.0.12` | `127.0.0.1:2203` |
+
+Detalles de red y sistema:
+
+- CNI **Flannel** con `--pod-network-cidr=10.244.0.0/16`.
+- containerd con `SystemdCgroup = true`.
+- Swap desactivada con `swapoff -a` y comentando `/etc/fstab` en **todos** los
+  nodos VirtualBox. En Docker no se puede cambiar el swap del host: kubeadm usa
+  `--ignore-preflight-errors=Swap` y kubelet usa `--fail-swap-on=false`.
+- Versión de Kubernetes configurable con `K8S_MINOR` (por defecto `1.36`).
+- `metrics-server` se instala desde el script de arranque; kubeadm no lo trae,
+  y el HPA `autoscaling/v2` no puede escalar sin la metrics API.
+
+### Parches específicos de kubeadm
+
+Los manifiestos compartidos (`kubernetes/cluster-manifests.yaml`) no cambian
+para no afectar a k3d/k3s. `scripts/kubeadm-up.sh` y `kubeadm-up-docker.sh`
+aplican estos cambios solo en este clúster:
+
+| Carga | nodeSelector original | nodeSelector en kubeadm |
+|---|---|---|
+| `chat-server` | `role: chat` | `workload: chat` (ambos workers) |
+| `prometheus` | `role: grafana` | `monitoring: grafana` (worker infra) |
+| `grafana` | `role: grafana` | `monitoring: grafana` (worker infra) |
+| `nginx-router` | `role: nginx` | `edge: nginx` (ambos workers, 2 réplicas) |
+| `mariadb-primary` | – | `role: db` (worker infra) |
+| `mariadb-replica` | – | `role: chat` (worker app) |
+| `mariadb-failover` | – | `role: control-plane` (taint eliminado) |
+| `nats` StatefulSet | `role: control-plane` | `nats: enabled` (ambos workers, 2 pods) |
+
+Además se añaden reglas de anti-afinidad: NATS y nginx se reparten obligatoriamente
+entre los dos workers; chat usa una regla preferida para poder seguir escalando
+más allá de dos réplicas. La imagen `chat-server:latest` se importa en los dos
+workers para que la recuperación ante fallo no dependa de descargar imágenes.
+Prometheus usa un ConfigMap propio: `kubernetes/kubeadm/prometheus-config.yaml`
+(VirtualBox) o `prometheus-config-docker.yaml` (Docker, con DNS por nombre de
+contenedor).
 
 ---
 
@@ -92,11 +137,11 @@ configurable con `K8S_MINOR` (por defecto `1.36`).
 |---|---|
 | Instalar clúster con **kubeadm** | `Vagrantfile.kubeadm` + `scripts/kubeadm-up.sh`: `kubeadm init` y `kubeadm join`. |
 | Contextualización y arquitectura | Secciones 1 y 2 de este documento. |
-| **1 master + 2 workers** (mínimo) | Se crean **1 control-plane + 4 workers**, mismo número que el setup actual (el requisito pide dos; aquí hay cuatro para conservar la topología de la app). |
-| Deshabilitar swap | `swapoff -a` + `sed` en `/etc/fstab` en la provision común. Verificado por `scripts/kubeadm-verify.sh`. |
+| **1 master + 2 workers** | Exactamente 1 control-plane y 2 workers, con los servicios consolidados en ellos. |
+| Deshabilitar swap | `swapoff -a` + `sed` en `/etc/fstab` en la provision común (en la variante Docker, flags de kubeadm/kubelet). Verificado en el paso 2 de `kubeadm-verify.sh`. |
 | Configurar CNI (Flannel/Calico) hasta `Ready` | Flannel aplicado en el master; el script espera `kubectl wait --for=condition=Ready nodes --all` ejecutado **dentro del control-plane**. |
-| Verificar **escalado** | HPA v2 (1→3 réplicas, 60% CPU) + Job `load-generator`; verificado en el paso 4 del script. |
-| Analizar **tolerancia a fallos** | Pruebas de pod, worker y control-plane + análisis en la sección 5. |
+| Verificar **escalado** | HPA v2 (2→4 réplicas, 60% CPU) + `metrics-server` + Job `load-generator`; verificado en el paso 4 de `kubeadm-verify.sh` y en el escenario 10 de `kubeadm-chaos.sh`. |
+| Analizar **tolerancia a fallos** | `kubeadm-chaos.sh` inyecta 11 fallos, comprueba después cada uno que la app sigue respondiendo y restaura el clúster; análisis en la sección 5. |
 
 ---
 
@@ -113,8 +158,9 @@ el driver de cgroups `systemd`, mientras Alpine usa OpenRC y no tiene esos
 paquetes; la combinación es frágil y no aporta una ventaja real aquí.
 
 ```bash
-bash scripts/kubeadm-up.sh          # construye la imagen, inicializa y despliega
-bash scripts/kubeadm-verify.sh      # comprueba swap, CNI, HPA y fallos de pod/worker
+bash scripts/kubeadm-up.sh          # construye la imagen, inicializa y despliega HA
+bash scripts/kubeadm-verify.sh      # swap, CNI, HA, HPA, API y fallos de pod/worker
+bash scripts/kubeadm-chaos.sh       # 11 fallos automatizados + comprobación de la app
 bash scripts/kubeadm-controlplane-failure.sh   # opcional: fallo del control-plane
 bash scripts/kubeadm-down.sh        # destroy -f; no toca k3d/k3s
 ```
@@ -127,10 +173,13 @@ K8S_MINOR=1.35 bash scripts/kubeadm-up.sh
 
 Accesos:
 
-- Chat UI: <http://localhost:18080/>
+- Chat UI: <http://localhost:18080/> (worker infra) o <http://localhost:18081/> (worker app)
 - Grafana: <http://localhost:18080/grafana/>
 - Health: <http://localhost:18080/api/health>
 - kubeconfig: `/etc/kubernetes/admin.conf` (solo dentro de `kubeadm-controlplane`)
+
+Los dos puertos llegan al mismo Service NodePort; si un worker falla, el otro
+sigue sirviendo la UI. Los scripts de prueba prueban ambos automáticamente.
 
 Ejemplos (se ejecutan en el host pero corren **dentro del master**):
 
@@ -140,28 +189,19 @@ vagrant ssh kubeadm-controlplane -c 'sudo kubectl get hpa chat-server'
 vagrant ssh kubeadm-controlplane -c 'sudo kubectl logs deploy/chat-server'
 ```
 
-Notas sobre el despliegue de la app:
-
-- El master aplica `/vagrant/kubernetes/cluster-manifests.yaml` y
-  `/vagrant/kubernetes/nginx-configmap.yaml` (la carpeta del repo está montada
-  en `/vagrant` dentro de las VMs).
-- `chat-server` se parchea a `nodeSelector: workload: chat` (ver sección 2).
-- Prometheus cambia sus targets estáticos de `192.168.56.1x` a
-  `192.168.56.2x` y Grafana usa `root_url` con el puerto 18080.
-- La imagen `chat-server:latest` se importa en los dos workers con `workload=chat`.
-
 ---
 
 ## 4.1 Variante rápida con proveedor Docker (experimental)
 
 Si el arranque con VirtualBox es lento, existe una variante que usa el
-**proveedor Docker de Vagrant**: los 5 nodos son contenedores privilegiados con
+**proveedor Docker de Vagrant**: los 3 nodos son contenedores privilegiados con
 systemd en vez de VMs. Las herramientas de Kubernetes ya vienen horneadas en
 `docker/kubeadm-node/Dockerfile`, así que el arranque es mucho más rápido.
 
 ```bash
 bash scripts/kubeadm-up-docker.sh
 KUBEADM_DOCKER=1 bash scripts/kubeadm-verify.sh
+KUBEADM_DOCKER=1 bash scripts/kubeadm-chaos.sh                  # 11 fallos automatizados
 KUBEADM_DOCKER=1 bash scripts/kubeadm-controlplane-failure.sh   # opcional
 bash scripts/kubeadm-down-docker.sh
 ```
@@ -172,7 +212,7 @@ bash scripts/kubeadm-down-docker.sh
 | Arranque | ~30-60 s por VM | ~2-10 s por contenedor (imagen solo se construye la 1ª vez) |
 | RAM aproximada | 5-6 GB | 2-3 GB |
 | Aislamiento | VM completa | contenedor privilegiado (`--privileged`, cgroupns host) |
-| Red | `192.168.56.20-24` | aislada `cda-kubeadm` (`172.28.0.0/16`), IPs fijas **.10-.14** |
+| Red | `192.168.56.20-22` | aislada `cda-kubeadm` (`172.28.0.0/16`), IPs fijas **.10-.12** |
 | Swap | `swapoff -a` en la VM | no se puede desactivar la del host; `--ignore-preflight-errors=Swap` + kubelet `--fail-swap-on=false` |
 | Fiabilidad | alta | dependiente del host; Linux funciona mejor que Docker Desktop |
 | Estado Vagrant | `.vagrant-kubeadm/` | `.vagrant-kubeadm-docker/` |
@@ -188,28 +228,30 @@ construir `cda-kubeadm-node` (`K8S_MINOR=1.35 bash scripts/kubeadm-up-docker.sh`
 
 Sobre el swap: dentro de un contenedor no se puede desactivar el swap del host.
 Además de `--ignore-preflight-errors=Swap`, la imagen de los nodos incluye un
-drop-in de systemd con `KUBELET_EXTRA_ARGS=--fail-swap-on=false` para que el
-propio `kubelet` no se niegue a arrancar.
+drop-in de systemd con `KUBELET_EXTRA_ARGS=--fail-swap-on=false`. Por eso
+`kubeadm-verify.sh` comprueba ese flag en la variante Docker en vez de exigir
+`swapon --show` vacío.
 
 ### 4.2 Sin Vagrant instalado: Vagrant dentro de un contenedor
 
 Sí, se puede. El PC solo necesita **Docker**. La idea no es que Vagrant corra
 los nodos *dentro* de su contenedor, sino que el contenedor controlador tenga
 Vagrant + Docker CLI y hable con el **Docker Engine del host** mediante
-`/var/run/docker.sock` (Docker-outside-of-Docker). Los 5 nodos se crean como
+`/var/run/docker.sock` (Docker-outside-of-Docker). Los 3 nodos se crean como
 **hermanos** del contenedor controlador en el daemon del host:
 
 ```
 Host (solo Docker)
- ├── Docker Engine
- ├── (efímero) cda-vagrant-controller  → Vagrant + Docker CLI
- │      y habla por /var/run/docker.sock
- └── 5 contenedores nodo (quedan vivos cuando el controlador sale)
+  ├── Docker Engine
+  ├── (efímero) cda-vagrant-controller  → Vagrant + Docker CLI
+  │      y habla por /var/run/docker.sock
+  └── 3 contenedores nodo (quedan vivos cuando el controlador sale)
 ```
 
 ```bash
 bash scripts/kubeadm-in-docker.sh                    # construye el controlador y corre kubeadm-up-docker.sh
-bash scripts/kubeadm-verify-in-docker.sh             # verification desde el controlador
+bash scripts/kubeadm-verify-in-docker.sh             # verificación desde el controlador
+bash scripts/kubeadm-chaos-in-docker.sh              # 11 fallos automatizados + comprobaciones
 bash scripts/kubeadm-controlplane-failure-in-docker.sh  # fallo del control-plane (opcional)
 bash scripts/kubeadm-down-in-docker.sh               # teardown
 ```
@@ -220,17 +262,18 @@ bash scripts/kubeadm-down-in-docker.sh               # teardown
 host, así que en la práctica es acceso equivalente a root. No hace falta ser
 root *dentro* del contenedor controlador: ese contenedor ya corre como root.
 
-**Red aislada (no `bridge`):** los 5 nodos se crean en la red definida por el
-usuario `cda-kubeadm` (`172.28.0.0/16`) con IPs fijas `.10` a `.14`. El
-controlador está en `.2`, así que cada nodo tiene una IP propia de la laboratorio
+**Red aislada (no `bridge`):** los 3 nodos se crean en la red definida por el
+usuario `cda-kubeadm` (`172.28.0.0/16`) con IPs fijas `.10` a `.12`. El
+controlador está en `.2`, así que cada nodo tiene una IP propia del laboratorio
 y no comparte red con otros contenedores del host. La única excepción es el
-puerto `18080` de nginx, que se publica en el host para poder abrir la UI.
+puertos `18080` y `18081` de nginx, que se publican en el host para poder abrir
+la UI aunque falle un worker.
 
 Vagrant tiene una limitación aquí: su proveedor Docker lee
 `NetworkSettings.IPAddress` para obtener la IP SSH, y ese campo está vacío en
 redes personalizadas. Por eso:
 
-1. cada nodo publica el 22 **solo en `127.0.0.1`** (`2201`-`2205`) para que el
+1. cada nodo publica el 22 **solo en `127.0.0.1`** (`2201`-`2203`) para que el
    provider devuelva un `ssh_info` válido;
 2. `Vagrantfile.kubeadm.docker` fija `config.ssh.host`/`port` a la IP fija del
    nodo, y esos valores tienen prioridad sobre lo que diga el provider.
@@ -238,10 +281,12 @@ redes personalizadas. Por eso:
 Así `vagrant ssh` y el aprovisionamiento siguen funcionando sobre la LAN aislada,
 sin binds externos para SSH.
 
-Para la prueba de fallo del control-plane, el wrapper usa
-`HEALTH_URL=http://kubeadm-docker-worker-nginx:30080/api/health`: las redes
-definidas por el usuario sí tienen DNS por nombre de contenedor, y desde el
-controlador `localhost:18080` no es el puerto publicado en el host.
+Para las pruebas de fallo, los scripts prueban primero los puertos publicados
+`localhost:18080` / `localhost:18081` y, si no responden, usan los nombres DNS
+`http://kubeadm-docker-worker-infra:30080/api/health` y
+`http://kubeadm-docker-worker-app:30080/api/health`: las redes definidas por el
+usuario sí tienen DNS por nombre de contenedor, y desde el controlador
+`localhost:18080` no es el puerto publicado en el host.
 
 Detalle clave: cuando Vagrant corre dentro del contenedor, `Dir.pwd` es una
 ruta del contenedor que el daemon del host no puede ver. Por eso
@@ -249,10 +294,12 @@ ruta del contenedor que el daemon del host no puede ver. Por eso
 la ruta real del repo en el host; así los nodos montan `/vagrant` desde la
 ruta correcta.
 
-También es posible prescindir de Vagrant por completo y crear los 5 contenedores
+También es posible prescindir de Vagrant por completo y crear los 3 contenedores
 con `docker run`/`docker compose` + `docker exec`, pero los scripts actuales
 ya usan Vagrant como capa de provisionamiento y la opción de arriba evita
 duplicar esa lógica.
+
+---
 
 ## 5. Escalabilidad y tolerancia a fallos
 
@@ -260,58 +307,75 @@ duplicar esa lógica.
 
 `HorizontalPodAutoscaler` (`autoscaling/v2`):
 
-- `minReplicas: 1`, `maxReplicas: 3`
-- objetivo: 60% de uso de CPU (sobre `requests.cpu: 100m`)
-- scale-up inmediato (periodo 30 s, hasta +100% o +2 pods)
-- scale-down con ventana de estabilización de 120 s
+- `minReplicas: 2`, `maxReplicas: 4` (el mínimo ya garantiza un pod por worker).
+- objetivo: 60% de uso de CPU (sobre `requests.cpu: 100m`).
+- scale-up inmediato (periodo 30 s, hasta +100% o +2 pods).
+- scale-down con ventana de estabilización de 120 s.
+
+`metrics-server` se instala en el arranque (`scripts/kubeadm-up*.sh`) y se parchea
+con `--kubelet-insecure-tls`, necesario con los certificados autofirmados de
+kubeadm en un laboratorio local.
 
 Prueba: `scripts/kubeadm-verify.sh` aplica
 `/vagrant/kubernetes/demo/load-generator.yaml` (10 workers, 180 s) y espera a que
-`status.desiredReplicas >= 2`. El resultado real queda en
-`docs/evidence/kubeadm-verify.txt`.
+`status.desiredReplicas` **supere el valor inicial** (no solo que llegue a 2,
+porque ahora el mínimo ya es 2). El escenario 10 de `kubeadm-chaos.sh` repite
+la carga mientras elimina un pod de chat. El resultado real queda en
+`docs/evidence/kubeadm-verify.txt` y `docs/evidence/kubeadm-chaos.txt`.
 
 > Puedes completar aquí los valores observados: réplicas antes/después,
 > `TARGETS`, tiempo hasta el scale-up y CPU por pod.
 
-### 5.2 Escenarios de fallo
+### 5.2 Suite automática de fallos
 
-| Escenario | Comportamiento esperado | Evidencia |
+`scripts/kubeadm-chaos.sh` (o `kubeadm-chaos-in-docker.sh`) hace todo sin
+intervención: inyecta el fallo, espera a que Kubernetes reaccione, comprueba que
+la **API sigue aceptando y devolviendo mensajes** (`POST /api/messages` + `GET
+/api/messages`), restaura el estado y al final devuelve código de salida 0 solo
+si todas las comprobaciones pasan. Todas las órdenes `kubectl` se ejecutan dentro
+del control-plane.
+
+| # | Fallo inyectado | Comportamiento esperado |
 |---|---|---|
-| Se borra un pod de `chat-server` | El ReplicaSet crea otro pod; el Service deja de enviar tráfico al pod eliminado. | Paso 5 de `kubeadm-verify.sh` |
-| Se detiene `kubelet` en `kubeadm-worker-chat` | El nodo pasa a `NotReady`. El pod se elimina de forma acelerada y se reprograma en `kubeadm-worker-nginx` (también `workload=chat`). | Paso 6 de `kubeadm-verify.sh` |
-| Se detiene el control-plane | Las cargas ya en ejecución siguen respondiendo, pero `kubectl` deja de funcionar: no se pueden crear/borrar objetos ni hay scheduling nuevo. Al restaurar `kubelet`, el API vuelve. | `kubeadm-controlplane-failure.sh` |
-| Falla el worker de DB | MariaDB deja de estar disponible: `mariadb-service` no tiene endpoints y `/api/ready` falla. Los pods de chat siguen corriendo pero pierden historial. | Análisis (no automatizado) |
-| Falla el worker de Grafana | Se pierde Prometheus/Grafana; el chat sigue funcionando. | Análisis (no automatizado) |
+| 0 | Ninguno (baseline) | 3 nodos `Ready`, 2 chat, 2 nginx, 2 NATS, MariaDB primario activo y round-trip correcto. |
+| 1 | Borrar un pod `chat-server` | El ReplicaSet lo recrea; la API sigue respondiendo. |
+| 2 | `kill 1` dentro de un contenedor chat | La liveness/el gestor de señales reinicia el proceso; la API sigue respondiendo. |
+| 3 | Borrar un pod `nginx-router` | La segunda réplica sigue en el otro worker y se recrea la primera. |
+| 4 | Borrar un pod NATS | Queda el otro servidor y el StatefulSet recrea el pod. |
+| 5 | Apagar el worker `app` | chat/nginx/NATS se reubican en `infra`; los dos puertos de host se prueban. |
+| 6 | Apagar el worker `infra` | El failover controller cambia `mariadb-service` al replica; al volver `infra`, vuelve al primary. |
+| 7 | Apagar el control-plane | La API de Kubernetes deja de responder, pero nginx, chat, NATS y MariaDB siguen en los workers y la API de chat responde. |
+| 8 | Borrar el pod MariaDB activo | El Deployment lo recrea y el tráfico vuelve al primario/replica correspondiente. |
+| 9 | Borrar Prometheus y Grafana | Se recrean; al no estar en la ruta de petición, la API de chat no se interrumpe. |
+| 10 | Carga sostenida + borrar un pod chat | El HPA escala y la API sigue respondiendo durante la sustitución. |
 
-En el paso 6 se usa `--grace-period=0 --force` para no esperar los ~5 minutos
-por defecto del taint de evicción; en una caída real ese es el tiempo que tarda
-el control-plane en declarar el nodo como `NotReady` y migrar los pods.
+En los apagados de nodo se usa `docker stop` / `vagrant stop` y después se
+arranca el nodo; en los borrados de pod se usa `--grace-period=0 --force` para
+no esperar los ~5 minutos del taint de evicción. La evidencia incluye los
+cambios de `mariadb-service` y el estado final de los nodos.
 
 ### 5.3 Puntos únicos de fallo (SPOF) y mejoras
 
-Este laboratorio es deliberadamente sencillo, por lo que **no es tolerante a
-fallos a nivel de infraestructura**. Los SPOFs son:
-
-1. **Control-plane único**: si falla, se pierde el API y etcd (aquí *stacked*).
-   - Mejora: 3 control-planes con `--control-plane-endpoint` tras un balanceador
-     y `--upload-certs`; etcd con 3 miembros aguanta 1 fallo (quorum 2/3).
-2. **MariaDB único** con PVC `ReadWriteOnce` en un solo worker.
-   - Mejora: StatefulSet + replicación (Galera/InnoDB Cluster) o un PVC remoto.
-3. **NATS único** en el control-plane.
-   - Mejora: clúster NATS de 3 nodos o JetStream con réplicas.
-4. **nginx-router único**: todo el tráfico entra por un pod.
-   - Mejora: varias réplicas + Service `LoadBalancer`/Ingress con multiple
-     réplicas, y `PodDisruptionBudget`.
-5. **Prometheus/Grafana únicos**: solo afecta a observabilidad.
+| Componente | Estado en este laboratorio | Mejora para producción |
+|---|---|---|
+| Control-plane | **SPOF**: sin API no hay scheduling ni failover de MariaDB. Los pods ya en ejecución siguen sirviendo porque nginx, NATS y MariaDB están en los workers. | 3 control-planes tras un LoadBalancer + etcd con quorum 2/3. |
+| `mariadb-failover` | Una sola réplica en el control-plane. | Controller con leader election en los 3 nodos. |
+| MariaDB | Dos servidores con replicación asíncrona y failover automatizado del Service. Puede perderse algún mensaje escrito justo antes de un fallo; tras el failback el primario puede tener un historial algo desactualizado. | Galera / InnoDB Cluster con replicación síncrona y quorum. |
+| NATS | Dos servidores enrutados (aguanta la pérdida de uno). | 3 servidores (quorum) o JetStream con réplicas. |
+| nginx | Dos réplicas, una por worker, detrás del mismo NodePort. | Ingress + VIP / LoadBalancer externo. |
+| Prometheus / Grafana | Siguen siendo singular, pero solo afectan a observabilidad. | StatefulSet con almacenamiento replicado. |
 
 Protecciones que **sí** existen:
 
-- `Deployment` + `ReplicaSet` (autocuración de pods).
+- `Deployment` + `ReplicaSet` (autocuración de pods) y `StatefulSet` para NATS.
 - `RollingUpdate` con `maxUnavailable: 0` en `chat-server`.
 - `PodDisruptionBudget` (`maxUnavailable: 1`) para `chat-server`.
-- `topologySpreadConstraints` por hostname (con `ScheduleAnyway`).
+- `topologySpreadConstraints` + anti-afinidad por hostname.
 - Probes de startup/readiness/liveness en chat, MariaDB y NATS.
-- Dos workers con `workload=chat` permiten mover los pods de la app.
+- Dos workers con las etiquetas `workload`, `edge` y `nats` y la imagen
+  precargada permiten mover todos los componentes críticos al superviviente.
+- El script de caos comprueba la función de la aplicación (no solo el estado de
+  los pods) después de **cada** fallo y limpia los recursos de prueba al salir.
 
 ---
 
@@ -320,6 +384,7 @@ Protecciones que **sí** existen:
 Los scripts guardan la salida en:
 
 - `docs/evidence/kubeadm-verify.txt`
+- `docs/evidence/kubeadm-chaos.txt`
 - `docs/evidence/kubeadm-controlplane-failure.txt`
 
 (`*.log` está ignorado por Git, por eso se usa extensión `.txt`.) Puedes pegar

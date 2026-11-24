@@ -1,0 +1,399 @@
+# kubeadm-only MariaDB HA pair. The base manifest has a single Deployment with
+# a ReadWriteOnce PVC on one worker. Here each worker runs one server and a tiny
+# controller repoints mariadb-service to the survivor if the primary dies.
+# Replication is asynchronous: the lab accepts a few seconds of lag.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mariadb-primary-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mariadb-replica-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mariadb-primary
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mariadb-primary
+  template:
+    metadata:
+      labels:
+        app: mariadb-primary
+        db-role: primary
+    spec:
+      nodeSelector:
+        role: db
+      containers:
+      - name: mariadb
+        image: mariadb:11.4
+        imagePullPolicy: IfNotPresent
+        args:
+        - --character-set-server=utf8mb4
+        - --collation-server=utf8mb4_unicode_ci
+        - --server-id=1
+        - --log-bin=mysql-bin
+        - --bind-address=0.0.0.0
+        ports:
+        - name: mysql
+          containerPort: 3306
+        env:
+        - name: MARIADB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: chat-db-credentials
+              key: root-password
+        - name: MARIADB_DATABASE
+          valueFrom:
+            secretKeyRef:
+              name: chat-db-credentials
+              key: database
+        - name: MARIADB_USER
+          valueFrom:
+            secretKeyRef:
+              name: chat-db-credentials
+              key: username
+        - name: MARIADB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: chat-db-credentials
+              key: password
+        - name: MARIADB_REPLICATION_USER
+          value: repl
+        - name: MARIADB_REPLICATION_PASSWORD
+          value: replpassword
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+        - name: init
+          mountPath: /docker-entrypoint-initdb.d
+          readOnly: true
+        readinessProbe:
+          exec:
+            command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        livenessProbe:
+          exec:
+            command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: "1"
+            memory: 384Mi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: mariadb-primary-data
+      - name: init
+        configMap:
+          name: mariadb-init
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mariadb-replica
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mariadb-replica
+  template:
+    metadata:
+      labels:
+        app: mariadb-replica
+        db-role: replica
+    spec:
+      nodeSelector:
+        role: chat
+      containers:
+      - name: mariadb
+        image: mariadb:11.4
+        imagePullPolicy: IfNotPresent
+        args:
+        - --character-set-server=utf8mb4
+        - --collation-server=utf8mb4_unicode_ci
+        - --server-id=2
+        - --log-bin=mysql-bin
+        - --read-only=ON
+        - --bind-address=0.0.0.0
+        ports:
+        - name: mysql
+          containerPort: 3306
+        env:
+        - name: MARIADB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: chat-db-credentials
+              key: root-password
+        - name: MARIADB_DATABASE
+          valueFrom:
+            secretKeyRef:
+              name: chat-db-credentials
+              key: database
+        - name: MARIADB_USER
+          valueFrom:
+            secretKeyRef:
+              name: chat-db-credentials
+              key: username
+        - name: MARIADB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: chat-db-credentials
+              key: password
+        - name: MARIADB_MASTER_HOST
+          value: mariadb-primary-service
+        - name: MARIADB_MASTER_PORT
+          value: "3306"
+        - name: MARIADB_REPLICATION_USER
+          value: repl
+        - name: MARIADB_REPLICATION_PASSWORD
+          value: replpassword
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+        - name: init
+          mountPath: /docker-entrypoint-initdb.d
+          readOnly: true
+        readinessProbe:
+          exec:
+            command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        livenessProbe:
+          exec:
+            command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: "1"
+            memory: 384Mi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: mariadb-replica-data
+      - name: init
+        configMap:
+          name: mariadb-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb-primary-service
+spec:
+  selector:
+    app: mariadb-primary
+  ports:
+  - name: mysql
+    port: 3306
+    targetPort: mysql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb-replica-service
+spec:
+  selector:
+    app: mariadb-replica
+  ports:
+  - name: mysql
+    port: 3306
+    targetPort: mysql
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mariadb-failover
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mariadb-failover
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services"]
+  verbs: ["get", "list", "watch", "patch", "update"]
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mariadb-failover
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mariadb-failover
+subjects:
+- kind: ServiceAccount
+  name: mariadb-failover
+  namespace: default
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mariadb-failover-script
+data:
+  failover.sh: |
+    #!/bin/sh
+    # Tiny failover controller for the two-node lab. It keeps mariadb-service
+    # pointing at a ready server, prefers the primary once it recovers and
+    # makes sure only the selected server accepts writes.
+    set -u
+
+    SERVICE="mariadb-service"
+    PRIMARY_APP="mariadb-primary"
+    REPLICA_APP="mariadb-replica"
+    INTERVAL="${FAILOVER_INTERVAL:-5}"
+
+    current_target() {
+      kubectl get svc "$SERVICE" -o jsonpath='{.spec.selector.app}' 2>/dev/null || true
+    }
+
+    ready_pod() {
+      kubectl get pods -l "app=$1" --no-headers 2>/dev/null | awk '
+        $3 == "Running" && $2 ~ /^[0-9]+\/[0-9]+$/ {
+          split($2, parts, "/")
+          if (parts[1] == parts[2] && parts[1] > 0) { print $1; exit }
+        }'
+    }
+
+    sql() {
+      pod="$1"
+      statement="$2"
+      [ -n "$pod" ] || return 0
+      kubectl exec "$pod" -- sh -c \
+        'mariadb --force -uroot -p"$MARIADB_ROOT_PASSWORD" -e "$1"' \
+        _ "$statement" >/dev/null 2>&1 || true
+    }
+
+    writable() { sql "$1" 'SET GLOBAL read_only=OFF;'; }
+    set_readonly() { sql "$1" 'SET GLOBAL read_only=ON;'; }
+
+    switch_to() {
+      app="$1"
+      pod="$2"
+      other="$3"
+      echo "$(date -u +%FT%TZ) switching mariadb-service to ${app} (${pod})"
+      sql "$pod" 'STOP SLAVE; RESET SLAVE ALL; RESET MASTER; SET GLOBAL read_only=OFF;'
+      set_readonly "$other"
+      kubectl patch svc "$SERVICE" \
+        -p "{\"spec\":{\"selector\":{\"app\":\"${app}\"}}}" >/dev/null 2>&1 || true
+      # Drop chat connection pools so they resolve the new Service endpoints.
+      kubectl rollout restart deployment/chat-server >/dev/null 2>&1 || true
+    }
+
+    echo "$(date -u +%FT%TZ) mariadb failover controller started"
+    while true; do
+      target="$(current_target)"
+      primary_pod="$(ready_pod "$PRIMARY_APP")"
+      replica_pod="$(ready_pod "$REPLICA_APP")"
+
+      if [ "$target" = "$REPLICA_APP" ] && [ -n "$primary_pod" ]; then
+        # Primary recovered: return to the preferred target.
+        switch_to "$PRIMARY_APP" "$primary_pod" "$replica_pod"
+      elif [ -z "$target" ]; then
+        if [ -n "$primary_pod" ]; then
+          switch_to "$PRIMARY_APP" "$primary_pod" "$replica_pod"
+        elif [ -n "$replica_pod" ]; then
+          switch_to "$REPLICA_APP" "$replica_pod" ""
+        fi
+      elif [ "$target" = "$PRIMARY_APP" ] && [ -z "$primary_pod" ]; then
+        if [ -n "$replica_pod" ]; then
+          switch_to "$REPLICA_APP" "$replica_pod" ""
+        else
+          echo "$(date -u +%FT%TZ) primary down; replica not ready yet"
+        fi
+      elif [ "$target" = "$REPLICA_APP" ] && [ -z "$replica_pod" ]; then
+        if [ -n "$primary_pod" ]; then
+          switch_to "$PRIMARY_APP" "$primary_pod" ""
+        else
+          echo "$(date -u +%FT%TZ) replica down; primary not ready yet"
+        fi
+      else
+        # Steady state: enforce read_only on the follower.
+        if [ "$target" = "$PRIMARY_APP" ]; then
+          writable "$primary_pod"
+          set_readonly "$replica_pod"
+        else
+          writable "$replica_pod"
+          set_readonly "$primary_pod"
+        fi
+      fi
+      sleep "$INTERVAL"
+    done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mariadb-failover
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mariadb-failover
+  template:
+    metadata:
+      labels:
+        app: mariadb-failover
+    spec:
+      serviceAccountName: mariadb-failover
+      nodeSelector:
+        role: control-plane
+      containers:
+      - name: controller
+        image: bitnami/kubectl:latest
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "/scripts/failover.sh"]
+        volumeMounts:
+        - name: script
+          mountPath: /scripts
+          readOnly: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+      volumes:
+      - name: script
+        configMap:
+          name: mariadb-failover-script
+          defaultMode: 0755
