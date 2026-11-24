@@ -54,6 +54,56 @@ bash scripts/kubeadm-down-in-docker.sh                  # teardown
 Both host ports reach the same NodePort Service. If one worker is stopped, use
 the other URL; the chaos suite tries both automatically.
 
+### First-time setup from a fresh clone
+
+On **Windows + Docker Desktop + WSL2** (the validated setup):
+
+1. Install Docker Desktop with the WSL2 backend and enable integration for the
+   distro you will use. Start it and check that `docker info` works **without
+   `sudo`**. If it does not, add the user to the `docker` group once from an
+   admin session (`sudo usermod -aG docker "$USER"`) and log out/in. Nothing
+   else is needed: no Vagrant, VirtualBox or host `kubectl`.
+2. Clone **inside the distro's ext4 filesystem**:
+   ```bash
+   git clone <URL> ~/CDA_chat && cd ~/CDA_chat
+   ```
+   Do not work from `/mnt/c/...` or `/mnt/e/...`: Docker Desktop cannot bind
+   mount DrvFs paths into the sibling node containers.
+3. Select the snapshotter for this shell (or add it to `~/.bashrc`):
+   ```bash
+   export CONTAINERD_SNAPSHOTTER=native
+   ```
+   The nested containerd cannot unpack overlayfs whiteouts on Docker Desktop.
+4. Start, verify and optionally inject faults:
+   ```bash
+   bash scripts/kubeadm-in-docker.sh
+   bash scripts/kubeadm-verify-in-docker.sh
+   bash scripts/kubeadm-chaos-in-docker.sh
+   ```
+   The first run builds two images and takes roughly 10-15 minutes. The three
+   node containers keep running after the controller exits; use the URLs above.
+5. Inspect and tear down later:
+   ```bash
+   docker exec kubeadm-docker-controlplane sudo kubectl get pods -o wide
+   bash scripts/kubeadm-down-in-docker.sh
+   ```
+   `down` removes the nodes, the network and the generated join data, but not
+   the images. To reproduce a completely clean clone, also remove
+   `cda-kubeadm-node:latest`, `chat-server:latest` and
+   `cda-vagrant-controller:latest`.
+
+`.vagrant-kubeadm-docker/` and `.kubeadm/` are generated automatically and are
+git-ignored; `.gitattributes` enforces LF endings, so no manual normalization
+is required after cloning.
+
+On **native Linux with Docker Engine** (no Docker Desktop), install Docker
+Engine, add the user to the `docker` group, clone anywhere under `$HOME` and run
+the same commands. `CONTAINERD_SNAPSHOTTER=native` is normally not needed there
+(set it only if nested overlayfs fails). Docker Desktop **for Linux** runs the
+daemon inside a VM: treat it like the WSL case (clone in a directory shared with
+that VM — check Settings → Resources → File sharing — and keep the `native`
+snapshotter). That combination has not been validated in this lab.
+
 What the scripts do:
 
 1. Build `cda-vagrant-controller` (Vagrant + Docker CLI + SSH client).
