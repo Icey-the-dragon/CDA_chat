@@ -36,13 +36,29 @@ kubectl get pods -o wide
 curl http://localhost:8080/healthz
 ```
 
+### La página de la demo
+
+Abre **http://localhost:8080/**. Es un panel que se actualiza solo, sin depender
+de la API de Kubernetes ni de servicios externos:
+
+- **Última réplica que respondió** y el nodo donde está.
+- **Peticiones del panel**, **réplicas detectadas** y **latencia media**.
+- **Distribución entre réplicas**: barras con el número de respuestas por pod.
+- **Log en vivo** con hora, pod,endpoint y duración de cada petición.
+- Botones: `Pedir otra`, `Generar carga` (10 peticiones de CPU en paralelo) y
+  `Limpiar`. El interruptor `Auto` activa una petición cada 700 ms.
+
+Todo se calcula en el navegador a partir de las respuestas de `/api/whoami`, así
+que verás aparecer nuevos pods en cuanto escale o se recree un ReplicaSet.
+
 Cuando termines: `bash teardown.sh`.
 
 ---
 
 ## 1) Balanceo de carga
 
-Ver qué réplica responde (los nombres de pod cambian):
+En la página, pulsa `Pedir otra` varias veces: verás cómo cambia el nombre del
+pod y cómo crecen las barras de distribución. Por terminal:
 
 ```bash
 for i in $(seq 1 8); do curl -s http://localhost:8080/api/whoami; echo; done
