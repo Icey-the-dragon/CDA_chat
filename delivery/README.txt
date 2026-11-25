@@ -3,7 +3,7 @@ CDA - Kubernetes con kubeadm (una VM)
 Requisito: VirtualBox 7 en Windows. Nada mas.
 
 1) Copia esta carpeta al PC del profesor.
-2) Ejecuta start.bat.
+2) Ejecuta start.bat (Windows) o start.sh (Linux: ./start.sh).
 3) Espera 2-3 minutos. Se abre la VM y el navegador en la URL que indica
    la ventana (normalmente http://127.0.0.1:8080/).
 

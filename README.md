@@ -1,228 +1,75 @@
-# CDA Chat
+# CDA · Kubernetes con kubeadm en una sola VM
 
-Laboratorio de Kubernetes para la práctica: **instalar un clúster con kubeadm,
-desplegar una aplicación y analizar escalabilidad y tolerancia a fallos**.
+Este repo contiene solo lo necesario para **entregar, usar y recrear** el
+montaje minimalista: una VM de VirtualBox con Docker y tres contenedores
+(`cda-master`, `cda-worker-1`, `cda-worker-2`) que forman un clúster kubeadm
+de 1 master + 2 workers. Ya incluye Flannel, metrics-server, la app de demo,
+Service NodePort `30080` y HPA `2 → 4`.
 
-La aplicación es un chat React + Node.js con REST/WebSocket, MariaDB y NATS,
-más Prometheus/Grafana y nginx como edge. El laboratorio usa exactamente
-**1 control-plane + 2 workers** con Vagrant y VirtualBox.
+## Usarlo (profesor)
 
-```
-Navegador -> nginx NodePort (:30080 -> host 18080/18081)
-              ├─ /           -> chat-server-service:8080 (UI React)
-              ├─ /api/       -> chat-server-service:8080 (REST)
-              ├─ /ws/        -> chat-server-service:8080 (WebSocket)
-              └─ /grafana/   -> grafana-service:3000
+Copiar la carpeta `delivery/` al PC y ejecutar:
 
-chat-server (2..4 réplicas) -> nats-service:4222 y mariadb-service:3306
-```
+- Windows: `start.bat`
+- Linux: `./start.sh`
 
-## Requisitos en el host
+El script importa `cda-kubeadm.ova` si hace falta, arranca la VM, espera a
+`http://127.0.0.1:8080/healthz` y abre el navegador. No hacen falta Vagrant,
+Docker, kubectl ni Internet en el PC del profesor.
 
-- VirtualBox + Vagrant (el usuario debe estar en `vboxusers`).
-- Docker para construir `chat-server:latest` (la imagen se importa en los workers).
-- `curl`. **No hace falta `kubectl` en el host**: todos los comandos se ejecutan
-  dentro del control-plane con `vagrant ssh ... -c 'sudo kubectl ...'`.
-- No ejecutar los scripts con `sudo`.
+Detalles y las cuatro comprobaciones están en `delivery/README.txt`.
 
-En Linux, si están cargados los módulos `kvm`, `kvm_intel` o `kvm_amd`,
-VirtualBox no puede arrancar las VM. Los scripts lo detectan y, si hay `sudo`
-sin contraseña, los descargan automáticamente. Si no, muestran el comando
-exacto. También puedes dejarlo preparado con:
+## Recrearlo (PC de construcción)
 
-```bash
-printf 'blacklist kvm\nblacklist kvm_intel\nblacklist kvm_amd\n' | \
-  sudo tee /etc/modprobe.d/blacklist-kvm.conf
-```
+Requisitos en el PC que construye: Docker, Vagrant, VirtualBox y la box
+`ubuntu/jammy64` ya cacheada.
 
-## Laboratorio kubeadm (Vagrant + VirtualBox)
+1. Si faltan las imágenes (están ignoradas por Git), generarlas:
 
-```bash
-bash scripts/kubeadm-up.sh                       # crea 1 master + 2 workers y despliega la app
-bash scripts/kubeadm-verify.sh                   # swap, CNI, Ready, HA, HPA y fallos
-bash scripts/kubeadm-chaos.sh                    # 11 escenarios de fallo automatizados
-bash scripts/kubeadm-controlplane-failure.sh     # opcional: caída del control-plane
-bash scripts/kubeadm-down.sh                     # destroy -f
-```
+   ```bash
+   docker build -f build/kubeadm-node.Dockerfile --build-arg K8S_MINOR=1.31 \
+     -t cda-kubeadm-node:latest build
+   docker save -o build/images/kubeadm-node.tar cda-kubeadm-node:latest
 
-| Nodo | IP | Servicios |
-| --- | --- | --- |
-| `kubeadm-controlplane` | `192.168.56.20` | API, etcd, scheduler, failover de MariaDB |
-| `kubeadm-worker-infra` | `192.168.56.21` | MariaDB primary, Prometheus, Grafana, nginx/NATS/chat |
-| `kubeadm-worker-app` | `192.168.56.22` | MariaDB replica, nginx, NATS, chat, generador de carga |
+   docker build -t cda-demo:latest demo-bundle/app
+   docker save -o build/images/cda-demo.tar cda-demo:latest
+   ```
 
-Accesos:
+2. Crear y aprovisionar la VM:
 
-| Servicio | URL |
-| --- | --- |
-| Chat UI (worker infra) | <http://localhost:18080/> |
-| Chat UI (worker app) | <http://localhost:18081/> |
-| Grafana | <http://localhost:18080/grafana/> |
-| Health | <http://localhost:18080/api/health> |
+   ```bash
+   cd build
+   vagrant up
+   ```
 
-Ambos puertos llegan al mismo NodePort, así que si un worker falla el otro
-sigue sirviendo la UI. Las pruebas prueban los dos automáticamente.
+   `build/setup.sh` desactiva swap, fija red independiente de la MAC, instala
+   Docker, levanta los 3 nodos, hace `kubeadm init`, instala Flannel, une los
+   workers, importa la imagen de la app y aplica los manifiestos.
 
-Ejemplos (se ejecutan en el host pero corren dentro del master):
+3. Comprobar y **apagar limpiamente** (importante: no usar `vagrant halt`):
 
-```bash
-vagrant ssh kubeadm-controlplane -c 'sudo kubectl get nodes -o wide'
-vagrant ssh kubeadm-controlplane -c 'sudo kubectl get hpa chat-server'
-vagrant ssh kubeadm-controlplane -c 'sudo kubectl logs deploy/chat-server'
-```
+   ```bash
+   vagrant ssh -c "curl -s http://127.0.0.1:30080/healthz; echo; sudo poweroff"
+   ```
 
-La versión de Kubernetes se puede fijar con `K8S_MINOR`:
+4. Exportar el OVA:
 
-```bash
-K8S_MINOR=1.35 bash scripts/kubeadm-up.sh
-```
+   ```bash
+   VBoxManage modifyvm CDA-Kubeadm-VM --natpf1 delete ssh
+   VBoxManage export CDA-Kubeadm-VM \
+     -o ../delivery/cda-kubeadm.ova --ovf20
+   VBoxManage unregistervm CDA-Kubeadm-VM --delete
+   ```
 
-El análisis completo de arquitectura, escalado y fallos está en
-[`docs/KUBEADM_LAB.md`](docs/KUBEADM_LAB.md). La evidencia se guarda en
-`docs/evidence/kubeadm-verify.txt`, `kubeadm-chaos.txt` y
-`kubeadm-controlplane-failure.txt`.
+5. Probar el entregable con solo `delivery/start.bat` o `delivery/start.sh`.
 
-## VM creadas con VBoxManage desde una base VDI (sin Vagrant)
+> El apagado debe ser limpio (`sudo poweroff`). Un apagado forzado deja el
+> sistema de archivos en un estado que puede bloquear el arranque tras
+> importar el OVA con una MAC nueva.
 
-Imitando el script del profesor: una **base VDI** con Debian + containerd +
-kubeadm se copia una vez por nodo, se crean las 3 VM con `VBoxManage createvm`
-y se arrancan. El PC del profesor solo necesita VirtualBox, `wget`, `unzip` y
-`curl` (ni Vagrant, ni Docker, ni `kubectl`).
+## Archivos
 
-Generar la base **una sola vez** en una máquina con Vagrant + VirtualBox + Docker:
-
-```bash
-bash scripts/build-kubeadm-base.sh      # -> base/cda-kubeadm-base.vdi(.zip) + SHA256SUMS
-```
-
-No se instala `virtualbox-guest-utils` con `apt`: ese paquete está en `contrib`
-y no está en todas las imágenes/espejos. La caja `debian/bookworm64` ya trae
-Guest Additions (Vagrant las instala/actualiza desde el ISO de VirtualBox), y el
-script comprueba `guestcontrol` antes de exportar el disco.
-
-Copiar `base/`, `scripts/`, `kubernetes/` y `src/` al PC del profesor y ejecutar:
-
-```bash
-bash scripts/kubeadm-vbox-lab.sh         # crear si faltan, arrancar y configurar kubeadm
-bash scripts/kubeadm-vbox-lab.sh stop    # apagar
-bash scripts/kubeadm-vbox-lab.sh reset   # borrar y recrear desde la base
-```
-
-`SKIP_INIT=1` crea y arranca sin configurar el clúster. La configuración
-(hostname/IP por guestproperties, `kubeadm init`, join, CNI y manifiestos) la
-hace `scripts/kubeadm-init-vbox.sh` mediante `VBoxManage guestcontrol`.
-Las VM son idempotentes: si `$HOME/CDA2627/<nombre-vm>` ya existe, no se
-recrean, igual que en el script del profe.
-
-Las IP fijas son `192.168.56.20-22` en `vboxnet0`; NAT publica `18080`,
-`18081` y `18082`. Si `vboxnet0` está ocupado: `HOSTONLY_NET=vboxnet1 ...`.
-
-> `kvm_intel`/`kvm_amd` bloquean a VirtualBox, también con este script. El
-> preflight los descarga cuando puede. Con `VBOX_KVM_UNLOAD=0` no los toca.
-
-## Entrega lista para arrancar con un script (OVA)
-
-Para el profesor: solo VirtualBox + `curl`, sin Vagrant, Docker ni `kubectl`.
-
-```bash
-bash scripts/launch-ova.sh demo               # demo mínima: http://127.0.0.1:8080/
-bash scripts/launch-ova.sh kubeadm            # laboratorio: http://127.0.0.1:18080/ y :18081/
-bash scripts/launch-ova.sh kubeadm verify     # arranca y ejecuta la verificación
-bash scripts/launch-ova.sh kubeadm stop
-bash scripts/launch-ova.sh kubeadm reset      # borra y reimporta las VM
-```
-
-Todo el ciclo de vida se hace con `VBoxManage` directamente. Si además quieres
-encadenar **todas** las pruebas sin invocar el binario de Vagrant:
-
-```bash
-bash scripts/kubeadm-vbox.sh          # importa, arranca, verify, chaos y fallo del master
-bash scripts/kubeadm-vbox.sh stop
-bash scripts/kubeadm-vbox.sh reset
-```
-
-> Ojo: `kvm_intel`/`kvm_amd` bloquean a **VirtualBox**, no solo a Vagrant.
-> `scripts/kubeadm-vbox.sh` no necesita Vagrant, pero `VBoxManage startvm`
-> seguirá fallando mientras esos módulos estén cargados. El preflight los
-> descarga si puede; con `VBOX_KVM_UNLOAD=0` no los toca (y VBox fallará).
-
-Los `.ova` no están en Git (son grandes). Se generan una vez y se entregan en
-`ova/`:
-
-```bash
-bash scripts/demo-ova-up.sh
-bash scripts/export-ova.sh demo
-bash scripts/demo-ova-down.sh
-
-bash scripts/kubeadm-up.sh
-bash scripts/export-ova.sh kubeadm
-```
-
-Detalles, puertos, los cuatro ejercicios y limitaciones:
-[`docs/OVA_DELIVERY.md`](docs/OVA_DELIVERY.md).
-
-## Estructura del repositorio
-
-- `src/chat-server/` – servidor Node.js + React en `frontend/`; `public/` se genera con Vite
-- `kubernetes/cluster-manifests.yaml` – manifiestos base (DB, chat, NATS, Prometheus, Grafana, nginx, HPA…)
-- `kubernetes/kubeadm/` – overlays HA de kubeadm (NATS, MariaDB + failover) y ConfigMaps de Prometheus
-- `Vagrantfile.kubeadm` – 1 control-plane + 2 workers en VirtualBox
-- `Vagrantfile.demo` – VM de construcción de `ova/demo.ova`
-- `Vagrantfile.base` – plantilla Debian para generar la base VDI
-- `base/` – `cda-kubeadm-base.vdi(.zip)` generado (binario, no versionado)
-- `scripts/kubeadm-vbox-lab.sh` – crea/arranca las VM con VBoxManage (estilo profe)
-- `scripts/build-kubeadm-base.sh` – genera la base VDI una vez
-- `scripts/kubeadm-init-vbox.sh` – configura kubeadm por guestcontrol
-- `scripts/kubeadm-*.sh` – arranque, verificación, caos, fallo del master y teardown
-- `scripts/launch-ova.sh`, `scripts/export-ova.sh`, `scripts/ova-*` – entrega OVA y pruebas sin Vagrant
-- `scripts/virtualbox-preflight.sh` – comprueba/descarga módulos KVM que bloquean VirtualBox
-- `demo-bundle/` – aplicación demo mínima usada por la OVA `demo`
-- `docs/` – análisis del laboratorio y guía de entrega
-
-No hay proveedor Docker ni laboratorios k3d/k3s en esta rama: solo kubeadm con
-Vagrant/VirtualBox y las herramientas de prueba/entrega.
-
-## Desarrollo local (sin Kubernetes)
-
-Requiere Node.js 20+, MariaDB y NATS:
-
-```bash
-docker run --rm --name cda-mariadb \
-  -e MYSQL_ROOT_PASSWORD=secretpassword-owo -e MYSQL_DATABASE=chatapp \
-  -e MYSQL_USER=chat -e MYSQL_PASSWORD=chatpassword -p 3306:3306 mariadb:11.4
-
-docker run --rm --name cda-nats -p 4222:4222 nats:2.10-alpine
-
-cd src/chat-server
-npm install
-npm run build
-PORT=3000 NATS_URL=nats://127.0.0.1:4222 npm start
-```
-
-Abre <http://localhost:3000>. Para hot reload: `npm run dev:ui` (Vite `:5173`)
-y `npm start`. `npm run check` valida tipos y sintaxis.
-
-## API y realtime (resumen)
-
-- **Health:** `GET /api/livez`, `GET /api/health`, `GET /api/ready` (ready exige MariaDB + NATS)
-- **Salas:** `GET /api/rooms`, `POST /api/rooms` `{ "name":"random" }`
-- **Mensajes:** `GET /api/messages?room=general&limit=50&before=<id>`, `POST /api/messages` `{ "room","username","body" }`
-- **Perfiles:** `GET /api/profile?username=...`, `PUT /api/profile` `{ "username","avatar","color" }`
-- **WebSocket:** `ws://<host>/ws/`; el cliente envía `join`, `message`, `typing`, `ping`
-- **Métricas:** `:9091/metrics` en cada pod de chat (no expuesto por nginx)
-
-## Configuración
-
-Variables principales (`src/chat-server/lib/config.js`): `PORT`, `METRICS_PORT`,
-`NATS_URL`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`,
-`HISTORY_LIMIT` y `MAX_MESSAGE_LENGTH`. Las credenciales del laboratorio están
-en el Secret `chat-db-credentials` de `kubernetes/cluster-manifests.yaml`.
-
-## Notas
-
-- No hay autenticación: es un proyecto de laboratorio.
-- El esquema de MariaDB lo inicializa el ConfigMap `mariadb-init` y lo asegura
-  `src/chat-server/lib/db.js` en el arranque.
-- El HPA escala solo pods de chat; no hay autoscaling de nodos.
-- Queda un único control-plane (SPOF documentado). Los pods ya programados
-  siguen sirviendo si cae, pero Kubernetes no puede crear ni reemplazar pods.
+- `build/` — construcción de la VM; no la necesita el profesor.
+- `delivery/` — entregable: `start.bat`, `start.sh`, `README.txt` y el OVA.
+- `demo-bundle/app/` — código fuente de la app de demo.
+- `build/images/` y `*.ova` — ignorados por Git; se generan localmente.
