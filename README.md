@@ -82,6 +82,39 @@ El análisis completo de arquitectura, escalado y fallos está en
 `docs/evidence/kubeadm-verify.txt`, `kubeadm-chaos.txt` y
 `kubeadm-controlplane-failure.txt`.
 
+## VM creadas con VBoxManage desde una base VDI (sin Vagrant)
+
+Imitando el script del profesor: una **base VDI** con Debian + containerd +
+kubeadm se copia una vez por nodo, se crean las 3 VM con `VBoxManage createvm`
+y se arrancan. El PC del profesor solo necesita VirtualBox, `wget`, `unzip` y
+`curl` (ni Vagrant, ni Docker, ni `kubectl`).
+
+Generar la base **una sola vez** en una máquina con Vagrant + VirtualBox + Docker:
+
+```bash
+bash scripts/build-kubeadm-base.sh      # -> base/cda-kubeadm-base.vdi(.zip) + SHA256SUMS
+```
+
+Copiar `base/`, `scripts/`, `kubernetes/` y `src/` al PC del profesor y ejecutar:
+
+```bash
+bash scripts/kubeadm-vbox-lab.sh         # crear si faltan, arrancar y configurar kubeadm
+bash scripts/kubeadm-vbox-lab.sh stop    # apagar
+bash scripts/kubeadm-vbox-lab.sh reset   # borrar y recrear desde la base
+```
+
+`SKIP_INIT=1` crea y arranca sin configurar el clúster. La configuración
+(hostname/IP por guestproperties, `kubeadm init`, join, CNI y manifiestos) la
+hace `scripts/kubeadm-init-vbox.sh` mediante `VBoxManage guestcontrol`.
+Las VM son idempotentes: si `$HOME/CDA2627/<nombre-vm>` ya existe, no se
+recrean, igual que en el script del profe.
+
+Las IP fijas son `192.168.56.20-22` en `vboxnet0`; NAT publica `18080`,
+`18081` y `18082`. Si `vboxnet0` está ocupado: `HOSTONLY_NET=vboxnet1 ...`.
+
+> `kvm_intel`/`kvm_amd` bloquean a VirtualBox, también con este script. El
+> preflight los descarga cuando puede. Con `VBOX_KVM_UNLOAD=0` no los toca.
+
 ## Entrega lista para arrancar con un script (OVA)
 
 Para el profesor: solo VirtualBox + `curl`, sin Vagrant, Docker ni `kubectl`.
@@ -93,6 +126,20 @@ bash scripts/launch-ova.sh kubeadm verify     # arranca y ejecuta la verificaci�
 bash scripts/launch-ova.sh kubeadm stop
 bash scripts/launch-ova.sh kubeadm reset      # borra y reimporta las VM
 ```
+
+Todo el ciclo de vida se hace con `VBoxManage` directamente. Si además quieres
+encadenar **todas** las pruebas sin invocar el binario de Vagrant:
+
+```bash
+bash scripts/kubeadm-vbox.sh          # importa, arranca, verify, chaos y fallo del master
+bash scripts/kubeadm-vbox.sh stop
+bash scripts/kubeadm-vbox.sh reset
+```
+
+> Ojo: `kvm_intel`/`kvm_amd` bloquean a **VirtualBox**, no solo a Vagrant.
+> `scripts/kubeadm-vbox.sh` no necesita Vagrant, pero `VBoxManage startvm`
+> seguirá fallando mientras esos módulos estén cargados. El preflight los
+> descarga si puede; con `VBOX_KVM_UNLOAD=0` no los toca (y VBox fallará).
 
 Los `.ova` no están en Git (son grandes). Se generan una vez y se entregan en
 `ova/`:
@@ -116,6 +163,11 @@ Detalles, puertos, los cuatro ejercicios y limitaciones:
 - `kubernetes/kubeadm/` – overlays HA de kubeadm (NATS, MariaDB + failover) y ConfigMaps de Prometheus
 - `Vagrantfile.kubeadm` – 1 control-plane + 2 workers en VirtualBox
 - `Vagrantfile.demo` – VM de construcción de `ova/demo.ova`
+- `Vagrantfile.base` – plantilla Debian para generar la base VDI
+- `base/` – `cda-kubeadm-base.vdi(.zip)` generado (binario, no versionado)
+- `scripts/kubeadm-vbox-lab.sh` – crea/arranca las VM con VBoxManage (estilo profe)
+- `scripts/build-kubeadm-base.sh` – genera la base VDI una vez
+- `scripts/kubeadm-init-vbox.sh` – configura kubeadm por guestcontrol
 - `scripts/kubeadm-*.sh` – arranque, verificación, caos, fallo del master y teardown
 - `scripts/launch-ova.sh`, `scripts/export-ova.sh`, `scripts/ova-*` – entrega OVA y pruebas sin Vagrant
 - `scripts/virtualbox-preflight.sh` – comprueba/descarga módulos KVM que bloquean VirtualBox

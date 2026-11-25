@@ -64,6 +64,22 @@ HOSTONLY_NET=vboxnet1 HOSTONLY_IP=192.168.56.1 bash scripts/launch-ova.sh kubead
 
 No ejecutes estos scripts con `sudo`: VirtualBox no debe correr como root.
 
+### Sin Vagrant: un solo script con VBoxManage
+
+```bash
+bash scripts/kubeadm-vbox.sh          # importa, arranca, verify, chaos y fallo del master
+bash scripts/kubeadm-vbox.sh start    # solo importar/arrancar
+bash scripts/kubeadm-vbox.sh stop
+bash scripts/kubeadm-vbox.sh reset
+```
+
+No invoca el binario de Vagrant: importa las OVA, crea `vboxnet0`, configura los
+port-forwards y ejecuta los comandos dentro de las VM con
+`VBoxManage guestcontrol`. Necesita las OVA en `ova/` y, como cualquier VM de
+VirtualBox, que `kvm_intel`/`kvm_amd` no estén cargados. El preflight los
+descarga cuando puede; con `VBOX_KVM_UNLOAD=0` los deja intactos y
+`VBoxManage startvm` dará *VT-x is not available*.
+
 ## Demostrar los cuatro requisitos
 
 ### Opción A: demo k3d (la más visual para balanceo)
