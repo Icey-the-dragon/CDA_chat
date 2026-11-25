@@ -1,7 +1,6 @@
 kubeconfig.yaml
 .vagrant
 .vagrant-kubeadm/
-.vagrant-kubeadm-docker/
 .vagrant-demo/
 .kubeadm/
 ova/

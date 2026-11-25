@@ -14,6 +14,9 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=scripts/virtualbox-preflight.sh
+source "$ROOT_DIR/scripts/virtualbox-preflight.sh"
+
 usage() {
   cat <<EOF
 Usage: bash scripts/launch-ova.sh <demo|kubeadm> [start|stop|reset|verify]
@@ -54,6 +57,10 @@ for cmd in VBoxManage curl; do
     exit 1
   fi
 done
+
+if [ "$ACTION" != stop ] && ! vbox_preflight "$ROOT_DIR"; then
+  exit 1
+fi
 
 OVA_DIR="${OVA_DIR:-$ROOT_DIR/ova}"
 LOG_DIR="$ROOT_DIR/docs/evidence"

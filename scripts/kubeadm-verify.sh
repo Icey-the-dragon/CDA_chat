@@ -10,41 +10,21 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# KUBEADM_DOCKER=1 selects the Docker-provider lab without needing a thin
-# wrapper script. Works both on a host with Vagrant and inside the controller
-# container (ROOT_DIR is /workspace there).
-if [[ "${KUBEADM_DOCKER:-0}" == "1" ]]; then
-  export VAGRANT_VAGRANTFILE="${ROOT_DIR}/Vagrantfile.kubeadm.docker"
-  export VAGRANT_DOTFILE_PATH="${VAGRANT_DOTFILE_PATH:-${ROOT_DIR}/.vagrant-kubeadm-docker}"
-  export KUBEADM_PREFIX="kubeadm-docker"
-fi
+export VAGRANT_VAGRANTFILE="$ROOT_DIR/Vagrantfile.kubeadm"
+export VAGRANT_DOTFILE_PATH="$ROOT_DIR/.vagrant-kubeadm"
 
-export VAGRANT_VAGRANTFILE="${VAGRANT_VAGRANTFILE:-$ROOT_DIR/Vagrantfile.kubeadm}"
-export VAGRANT_DOTFILE_PATH="${VAGRANT_DOTFILE_PATH:-$ROOT_DIR/.vagrant-kubeadm}"
-
-# Default names match the VirtualBox lab; KUBEADM_DOCKER=1 switches them to
-# the Docker node names.
-PREFIX="${KUBEADM_PREFIX:-kubeadm}"
-CP="${PREFIX}-controlplane"
-APP_WORKER="${PREFIX}-worker-app"
-INFRA_WORKER="${PREFIX}-worker-infra"
+CP="kubeadm-controlplane"
+APP_WORKER="kubeadm-worker-app"
+INFRA_WORKER="kubeadm-worker-infra"
 LOG_DIR="$ROOT_DIR/docs/evidence"
 mkdir -p "$LOG_DIR"
 exec > >(tee "$LOG_DIR/kubeadm-verify.txt") 2>&1
 
-# Inside an exported OVA there is no Vagrant synced folder. The build copies
-# the manifests to /opt/cda-chat so the same commands still work.
-MANIFEST_DIR="${MANIFEST_DIR:-/vagrant}"
-if ! vagrant ssh "$CP" -c \
-  'test -f '"$MANIFEST_DIR"'/kubernetes/demo/load-generator.yaml' >/dev/null 2>&1 \
-  && vagrant ssh "$CP" -c \
-  'test -f /opt/cda-chat/kubernetes/demo/load-generator.yaml' >/dev/null 2>&1; then
-  MANIFEST_DIR=/opt/cda-chat
-fi
+# Manifests live on the VM disk at /opt/cda-chat (also after OVA import).
+MANIFEST_DIR="${MANIFEST_DIR:-/opt/cda-chat}"
 
-# Try every published worker port, plus the Docker network DNS names when the
-# script runs inside the controller container.
-HEALTH_URLS="${HEALTH_URLS:-http://localhost:18080/api/health,http://localhost:18081/api/health,http://kubeadm-docker-worker-infra:30080/api/health,http://kubeadm-docker-worker-app:30080/api/health}"
+# Try every published NodePort: workers first, control plane last.
+HEALTH_URLS="${HEALTH_URLS:-http://localhost:18080/api/health,http://localhost:18081/api/health,http://localhost:18082/api/health}"
 IFS=', ' read -r -a health_urls <<< "$HEALTH_URLS"
 
 ALL_NODES=(
@@ -121,29 +101,15 @@ for node in "${ALL_NODES[@]}"; do
 done
 
 echo
-if [[ "${KUBEADM_DOCKER:-0}" == "1" ]]; then
-  echo "==> 2. kubelet swap check disabled (host swap cannot be turned off in a container)"
-  for node in "${ALL_NODES[@]}"; do
-    # The Docker image sets the flag in /etc/default/kubelet (which wins over
-    # kubelet.service.d because of EnvironmentFile); VirtualBox uses a drop-in.
-    if vagrant ssh "$node" -c \
-        'grep -Rqs -- "--fail-swap-on=false" /etc/systemd/system/kubelet.service.d || grep -qs -- "--fail-swap-on=false" /etc/default/kubelet' >/dev/null 2>&1; then
-      pass "$node kubelet ignores host swap (--fail-swap-on=false)"
-    else
-      fail "$node is missing the kubelet swap drop-in"
-    fi
-  done
-else
-  echo "==> 2. Swap disabled on every node"
-  for node in "${ALL_NODES[@]}"; do
-    swap="$(vagrant ssh "$node" -c 'sudo swapon --show --noheadings' 2>/dev/null | tr -d '\r')"
-    if [ -z "$swap" ]; then
-      pass "$node has swap disabled"
-    else
-      fail "$node still reports swap: $swap"
-    fi
-  done
-fi
+echo "==> 2. Swap disabled on every node"
+for node in "${ALL_NODES[@]}"; do
+  swap="$(vagrant ssh "$node" -c 'sudo swapon --show --noheadings' 2>/dev/null | tr -d '\r')"
+  if [ -z "$swap" ]; then
+    pass "$node has swap disabled"
+  else
+    fail "$node still reports swap: $swap"
+  fi
+done
 
 echo
 echo "==> 3. CNI (Flannel) pods"

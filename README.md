@@ -1,270 +1,133 @@
 # CDA Chat
 
-CDA Chat is a small Kubernetes lab: a Node.js chat app (web UI + REST API + WebSocket) backed by MariaDB and NATS, with Prometheus, Grafana, and an nginx edge router.
+Laboratorio de Kubernetes para la práctica: **instalar un clúster con kubeadm,
+desplegar una aplicación y analizar escalabilidad y tolerancia a fallos**.
 
-- **Chat replicas** scale from 2 to 4 via a CPU-based HPA and share messages/presence through a two-server NATS cluster (MariaDB stores history).
-- In the kubeadm lab, **MariaDB, NATS and nginx are redundant**: each worker runs one instance, and a controller repoints `mariadb-service` to the survivor if the primary fails. Prometheus/Grafana remain single-instance (observability only).
+La aplicación es un chat React + Node.js con REST/WebSocket, MariaDB y NATS,
+más Prometheus/Grafana y nginx como edge. El laboratorio usa exactamente
+**1 control-plane + 2 workers** con Vagrant y VirtualBox.
 
 ```
-Browser -> nginx (:80 / host 18080 or 18081 in the kubeadm lab, 8080 in k3d)
-             ├─ /           -> chat-server-service:8080 (UI)
-             ├─ /api/       -> chat-server-service:8080 (REST)
-             ├─ /ws/        -> chat-server-service:8080 (WebSocket)
-             └─ /grafana/   -> grafana-service:3000
+Navegador -> nginx NodePort (:30080 -> host 18080/18081)
+              ├─ /           -> chat-server-service:8080 (UI React)
+              ├─ /api/       -> chat-server-service:8080 (REST)
+              ├─ /ws/        -> chat-server-service:8080 (WebSocket)
+              └─ /grafana/   -> grafana-service:3000
 
-chat-server replicas -> nats-service:4222 and mariadb-service:3306
+chat-server (2..4 réplicas) -> nats-service:4222 y mariadb-service:3306
 ```
 
-## Quick start: kubeadm lab on Docker (recommended)
+## Requisitos en el host
 
-The supported way to run the kubeadm lab uses **Docker only**. Vagrant is not
-installed on the host: it lives in a small controller container that talks to
-the host Docker daemon through `/var/run/docker.sock`. The three cluster nodes
-(**1 control-plane + 2 workers**) are created as sibling containers and keep
-running after the controller exits.
+- VirtualBox + Vagrant (el usuario debe estar en `vboxusers`).
+- Docker para construir `chat-server:latest` (la imagen se importa en los workers).
+- `curl`. **No hace falta `kubectl` en el host**: todos los comandos se ejecutan
+  dentro del control-plane con `vagrant ssh ... -c 'sudo kubectl ...'`.
+- No ejecutar los scripts con `sudo`.
 
-**Prerequisite:** Docker. Nothing else — no Vagrant, no VirtualBox, no host
-`kubectl`. Your user must be able to talk to the Docker daemon (be in the
-`docker` group or use `sudo`); because the scripts mount `/var/run/docker.sock`
-and run `--privileged` containers, this is effectively root-level access.
-
-On Windows with Docker Desktop + WSL, run the scripts from an ext4 path inside
-the distro (for example `~/CDA_chat`), not from `/mnt/e/...`: Docker Desktop
-cannot bind-mount Windows/DrvFs paths into sibling containers. The wrappers
-already set `NODE_VOLUME_SOURCE` and `VAGRANT_DEFAULT_PROVIDER=docker`, so a
-user in the `docker` group does not need `sudo`. On Docker Desktop also pass
-`CONTAINERD_SNAPSHOTTER=native` because nested overlayfs whiteouts are not
-supported.
+En Linux, si están cargados los módulos `kvm`, `kvm_intel` o `kvm_amd`,
+VirtualBox no puede arrancar las VM. Los scripts lo detectan y, si hay `sudo`
+sin contraseña, los descargan automáticamente. Si no, muestran el comando
+exacto. También puedes dejarlo preparado con:
 
 ```bash
-CONTAINERD_SNAPSHOTTER=native bash scripts/kubeadm-in-docker.sh  # build + start (native on Docker Desktop)
-bash scripts/kubeadm-verify-in-docker.sh                # swap/CNI/Ready + HPA + pod/worker failures
-bash scripts/kubeadm-chaos-in-docker.sh                 # 11 automated fault scenarios + checks
-bash scripts/kubeadm-controlplane-failure-in-docker.sh  # optional: stop the control plane
-bash scripts/kubeadm-down-in-docker.sh                  # teardown
+printf 'blacklist kvm\nblacklist kvm_intel\nblacklist kvm_amd\n' | \
+  sudo tee /etc/modprobe.d/blacklist-kvm.conf
 ```
 
-| Service | URL |
-| --- | --- |
-| Chat web UI (infra worker) | <http://localhost:18080/> |
-| Chat web UI (app worker) | <http://localhost:18081/> |
-| Grafana | <http://localhost:18080/grafana/> |
-| Chat health | <http://localhost:18080/api/health> |
-
-Both host ports reach the same NodePort Service. If one worker is stopped, use
-the other URL; the chaos suite tries both automatically.
-
-### First-time setup from a fresh clone
-
-On **Windows + Docker Desktop + WSL2** (the validated setup):
-
-1. Install Docker Desktop with the WSL2 backend and enable integration for the
-   distro you will use. Start it and check that `docker info` works **without
-   `sudo`**. If it does not, add the user to the `docker` group once from an
-   admin session (`sudo usermod -aG docker "$USER"`) and log out/in. Nothing
-   else is needed: no Vagrant, VirtualBox or host `kubectl`.
-2. Clone **inside the distro's ext4 filesystem**:
-   ```bash
-   git clone <URL> ~/CDA_chat && cd ~/CDA_chat
-   ```
-   Do not work from `/mnt/c/...` or `/mnt/e/...`: Docker Desktop cannot bind
-   mount DrvFs paths into the sibling node containers.
-3. Select the snapshotter for this shell (or add it to `~/.bashrc`):
-   ```bash
-   export CONTAINERD_SNAPSHOTTER=native
-   ```
-   The nested containerd cannot unpack overlayfs whiteouts on Docker Desktop.
-4. Start, verify and optionally inject faults:
-   ```bash
-   bash scripts/kubeadm-in-docker.sh
-   bash scripts/kubeadm-verify-in-docker.sh
-   bash scripts/kubeadm-chaos-in-docker.sh
-   ```
-   The first run builds two images and takes roughly 10-15 minutes. The three
-   node containers keep running after the controller exits; use the URLs above.
-5. Inspect and tear down later:
-   ```bash
-   docker exec kubeadm-docker-controlplane sudo kubectl get pods -o wide
-   bash scripts/kubeadm-down-in-docker.sh
-   ```
-   `down` removes the nodes, the network and the generated join data, but not
-   the images. To reproduce a completely clean clone, also remove
-   `cda-kubeadm-node:latest`, `chat-server:latest` and
-   `cda-vagrant-controller:latest`.
-
-`.vagrant-kubeadm-docker/` and `.kubeadm/` are generated automatically and are
-git-ignored; `.gitattributes` enforces LF endings, so no manual normalization
-is required after cloning.
-
-On **native Linux with Docker Engine** (no Docker Desktop), install Docker
-Engine, add the user to the `docker` group, clone anywhere under `$HOME` and run
-the same commands. `CONTAINERD_SNAPSHOTTER=native` is normally not needed there
-(set it only if nested overlayfs fails). Docker Desktop **for Linux** runs the
-daemon inside a VM: treat it like the WSL case (clone in a directory shared with
-that VM — check Settings → Resources → File sharing — and keep the `native`
-snapshotter). That combination has not been validated in this lab.
-
-What the scripts do:
-
-1. Build `cda-vagrant-controller` (Vagrant + Docker CLI + SSH client).
-2. Build `cda-kubeadm-node` (Debian + containerd + kubelet/kubeadm/kubectl). The
-   Docker variant uses `--cgroup-driver=cgroupfs` with `SystemdCgroup = false`
-   because the nodes share the host cgroup namespace, and sets
-   `KUBELET_EXTRA_ARGS=--fail-swap-on=false`. `K8S_MINOR` and
-   `CONTAINERD_SNAPSHOTTER` are build args.
-3. Create the isolated network `cda-kubeadm` (`172.28.0.0/16`).
-4. Start 3 containers with static IPs on that LAN — no default `bridge`:
-
-   | Node | IP | Services |
-   | --- | --- | --- |
-   | controlplane | `172.28.0.10` | API, etcd, scheduler, MariaDB failover controller |
-   | infra | `172.28.0.11` | MariaDB primary, Prometheus, Grafana, nginx/NATS/chat |
-   | app | `172.28.0.12` | MariaDB replica, nginx, NATS, chat-server, load generator |
-
-   Both workers carry `workload=chat`, `edge=nginx` and `nats=enabled`, so chat,
-   nginx and the event bus survive the loss of either worker. The controller
-   container itself is `172.28.0.2`. Vagrant
-   SSH is forced to use these LAN IPs instead of a host port; the only published
-   SSH bindings are loopback-only (`127.0.0.1:2201-2203`) and exist solely
-   because Vagrant's Docker provider needs one to report SSH info.
-
-5. Run `kubeadm init` / `kubeadm join`, install Flannel and `metrics-server`,
-   then apply the app manifests.
-6. Keep Vagrant state in `.vagrant-kubeadm-docker/` and generated join data in
-   `.kubeadm/` (both git-ignored).
-
-`kubectl` is only executed inside the control-plane container:
+## Laboratorio kubeadm (Vagrant + VirtualBox)
 
 ```bash
-vagrant ssh kubeadm-docker-controlplane -c 'sudo kubectl get nodes -o wide'
+bash scripts/kubeadm-up.sh                       # crea 1 master + 2 workers y despliega la app
+bash scripts/kubeadm-verify.sh                   # swap, CNI, Ready, HA, HPA y fallos
+bash scripts/kubeadm-chaos.sh                    # 11 escenarios de fallo automatizados
+bash scripts/kubeadm-controlplane-failure.sh     # opcional: caída del control-plane
+bash scripts/kubeadm-down.sh                     # destroy -f
 ```
 
-From the host you can also use Docker directly:
-
-```bash
-docker exec kubeadm-docker-controlplane sudo kubectl get pods -o wide
-```
-
-Because host swap cannot be disabled from a container, kubeadm is invoked with
-`--ignore-preflight-errors=Swap` and kubelet with `--fail-swap-on=false`. That is
-why the Docker variant works on machines with swap enabled.
-
-If an older run reports `kubeadm-docker-controlplane: Warning: Connection
-refused`, it left containers on the default `bridge`. Recreate them on the
-isolated network:
-
-```bash
-bash scripts/kubeadm-down-in-docker.sh
-docker network rm cda-kubeadm 2>/dev/null || true
-bash scripts/kubeadm-in-docker.sh
-```
-
-Evidence from the checks is written to `docs/evidence/*.txt`.
-
-### Other kubeadm entry points
-
-| Host has | Command | Provider |
+| Nodo | IP | Servicios |
 | --- | --- | --- |
-| Docker only | `bash scripts/kubeadm-in-docker.sh` | Docker via controller container (**recommended**) |
-| Vagrant + Docker | `bash scripts/kubeadm-up-docker.sh` | Docker directly |
-| Vagrant + VirtualBox | `bash scripts/kubeadm-up.sh` | Debian bookworm VMs (`192.168.56.20-22`) |
+| `kubeadm-controlplane` | `192.168.56.20` | API, etcd, scheduler, failover de MariaDB |
+| `kubeadm-worker-infra` | `192.168.56.21` | MariaDB primary, Prometheus, Grafana, nginx/NATS/chat |
+| `kubeadm-worker-app` | `192.168.56.22` | MariaDB replica, nginx, NATS, chat, generador de carga |
 
-Privileges on the host, per variant:
+Accesos:
 
-- **Vagrant + VirtualBox:** no root. Run as a normal user in the `vboxusers`
-  group (the VirtualBox install loads the kernel modules).
-- **Vagrant + Docker:** Vagrant itself does not need root, but your user must be
-  in the `docker` group (or have passwordless `sudo docker`) because Vagrant and
-  the script call the Docker CLI / talk to `/var/run/docker.sock`. That is
-  effectively root-level access, but **do not** run these scripts with `sudo`:
-  Vagrant/VirtualBox refuse to run as root and root-owned Vagrant state and
-  evidence files would be created.
-- **Docker only (controller container):** same Docker access requirement; no
-  Vagrant needed on the host.
+| Servicio | URL |
+| --- | --- |
+| Chat UI (worker infra) | <http://localhost:18080/> |
+| Chat UI (worker app) | <http://localhost:18081/> |
+| Grafana | <http://localhost:18080/grafana/> |
+| Health | <http://localhost:18080/api/health> |
 
-The `kubeadm-verify.sh`, `kubeadm-chaos.sh` and
-`kubeadm-controlplane-failure.sh` scripts are shared by all three variants.
-Select the Docker lab with `KUBEADM_DOCKER=1` (the `*-in-docker.sh` wrappers do
-this for you):
+Ambos puertos llegan al mismo NodePort, así que si un worker falla el otro
+sigue sirviendo la UI. Las pruebas prueban los dos automáticamente.
+
+Ejemplos (se ejecutan en el host pero corren dentro del master):
 
 ```bash
-KUBEADM_DOCKER=1 bash scripts/kubeadm-verify.sh
-KUBEADM_DOCKER=1 bash scripts/kubeadm-chaos.sh
-KUBEADM_DOCKER=1 bash scripts/kubeadm-controlplane-failure.sh
+vagrant ssh kubeadm-controlplane -c 'sudo kubectl get nodes -o wide'
+vagrant ssh kubeadm-controlplane -c 'sudo kubectl get hpa chat-server'
+vagrant ssh kubeadm-controlplane -c 'sudo kubectl logs deploy/chat-server'
 ```
 
-Teardown uses `kubeadm-down-in-docker.sh`, `kubeadm-down-docker.sh` or
-`kubeadm-down.sh`, respectively. Full architecture, requirement mapping,
-scaling and failure analysis: [`docs/KUBEADM_LAB.md`](docs/KUBEADM_LAB.md).
-
-## One-script OVA delivery (no install on the teacher PC)
-
-For a teacher machine with only VirtualBox + `curl`, export the labs once as
-OVA files and give them `scripts/` plus `ova/`. The launcher imports the VMs,
-replaces stale NAT rules, adds the port forwards, boots everything, waits for
-the app and opens the browser:
+La versión de Kubernetes se puede fijar con `K8S_MINOR`:
 
 ```bash
-bash scripts/launch-ova.sh demo      # demo-bundle: http://127.0.0.1:8080/
-bash scripts/launch-ova.sh kubeadm   # kubeadm:    http://127.0.0.1:18080/ and :18081/
-bash scripts/launch-ova.sh kubeadm verify   # see below
+K8S_MINOR=1.35 bash scripts/kubeadm-up.sh
+```
+
+El análisis completo de arquitectura, escalado y fallos está en
+[`docs/KUBEADM_LAB.md`](docs/KUBEADM_LAB.md). La evidencia se guarda en
+`docs/evidence/kubeadm-verify.txt`, `kubeadm-chaos.txt` y
+`kubeadm-controlplane-failure.txt`.
+
+## Entrega lista para arrancar con un script (OVA)
+
+Para el profesor: solo VirtualBox + `curl`, sin Vagrant, Docker ni `kubectl`.
+
+```bash
+bash scripts/launch-ova.sh demo               # demo mínima: http://127.0.0.1:8080/
+bash scripts/launch-ova.sh kubeadm            # laboratorio: http://127.0.0.1:18080/ y :18081/
+bash scripts/launch-ova.sh kubeadm verify     # arranca y ejecuta la verificación
 bash scripts/launch-ova.sh kubeadm stop
+bash scripts/launch-ova.sh kubeadm reset      # borra y reimporta las VM
 ```
 
-The `verify` action above is shorthand for the shared checks against the
-imported cluster; you can also run `kubeadm-verify-ova.sh`,
-`kubeadm-chaos-ova.sh` and `kubeadm-controlplane-failure-ova.sh` directly.
-No host Vagrant, Docker or `kubectl` is needed: the OVA scripts use
-`VBoxManage guestcontrol` inside the VMs.
-
-Export them from a machine that has Vagrant + VirtualBox:
+Los `.ova` no están en Git (son grandes). Se generan una vez y se entregan en
+`ova/`:
 
 ```bash
-bash scripts/demo-ova-up.sh && bash scripts/export-ova.sh demo
-bash scripts/kubeadm-up.sh && bash scripts/export-ova.sh kubeadm
+bash scripts/demo-ova-up.sh
+bash scripts/export-ova.sh demo
+bash scripts/demo-ova-down.sh
+
+bash scripts/kubeadm-up.sh
+bash scripts/export-ova.sh kubeadm
 ```
 
-OVAs are intentionally not committed (`ova/` and `*.ova` are git-ignored).
-Ports, host-only network, limitation notes and the four-exercise demo commands
-are in [`docs/OVA_DELIVERY.md`](docs/OVA_DELIVERY.md).
+Detalles, puertos, los cuatro ejercicios y limitaciones:
+[`docs/OVA_DELIVERY.md`](docs/OVA_DELIVERY.md).
 
-## Repository layout
+## Estructura del repositorio
 
-- `src/chat-server/` – Node.js server (`server.js`, `lib/`, `loadgen.js`) + React UI in `frontend/`; `public/` is generated by Vite and served by Express
-- `kubernetes/cluster-manifests.yaml` – app/infra manifests (DB init, MariaDB, chat, NATS, Prometheus, Grafana, nginx, HPA, etc.)
-- `kubernetes/nginx-configmap.yaml` / `nginx/default.conf` – nginx config
-- `kubernetes/demo/load-generator.yaml` – optional HPA load Job
-- `docker/kubeadm-node/Dockerfile` – kubeadm node image (Debian + K8s tools)
-- `docker/vagrant-controller/Dockerfile` – Vagrant controller image for Docker-only hosts
-- `Vagrantfile.kubeadm.docker` – 1 control-plane + 2 workers as Docker containers
-- `Vagrantfile.kubeadm` – same 3-node topology as VirtualBox VMs (Debian bookworm)
-- `kubernetes/kubeadm/` – kubeadm-only HA overlays (NATS cluster, MariaDB pair + failover controller) and Prometheus ConfigMaps (IPs or Docker DNS)
-- `scripts/kubeadm-*.sh` – start / verify / failure tests / teardown
-- `scripts/launch-ova.sh`, `scripts/export-ova.sh`, `scripts/ova-bin/vagrant` – OVA import/export and no-Vagrant checks
-- `demo-bundle/` – minimal k3d demo used by `launch-ova.sh demo`
-- `docs/KUBEADM_LAB.md` – architecture and analysis
-- `docs/OVA_DELIVERY.md` – one-script OVA delivery for the teacher PC
-- `k3d-cluster.yaml`, `Vagrantfile`, `Vagrantfile.docker` – original k3d/k3s labs (below)
+- `src/chat-server/` – servidor Node.js + React en `frontend/`; `public/` se genera con Vite
+- `kubernetes/cluster-manifests.yaml` – manifiestos base (DB, chat, NATS, Prometheus, Grafana, nginx, HPA…)
+- `kubernetes/kubeadm/` – overlays HA de kubeadm (NATS, MariaDB + failover) y ConfigMaps de Prometheus
+- `Vagrantfile.kubeadm` – 1 control-plane + 2 workers en VirtualBox
+- `Vagrantfile.demo` – VM de construcción de `ova/demo.ova`
+- `scripts/kubeadm-*.sh` – arranque, verificación, caos, fallo del master y teardown
+- `scripts/launch-ova.sh`, `scripts/export-ova.sh`, `scripts/ova-*` – entrega OVA y pruebas sin Vagrant
+- `scripts/virtualbox-preflight.sh` – comprueba/descarga módulos KVM que bloquean VirtualBox
+- `demo-bundle/` – aplicación demo mínima usada por la OVA `demo`
+- `docs/` – análisis del laboratorio y guía de entrega
 
-## Original labs (k3d / k3s)
+No hay proveedor Docker ni laboratorios k3d/k3s en esta rama: solo kubeadm con
+Vagrant/VirtualBox y las herramientas de prueba/entrega.
 
-These are still available, but the kubeadm lab above is the one used for the
-installation and fault-tolerance requirements.
+## Desarrollo local (sin Kubernetes)
 
-| Lab | Start | Teardown | Host port |
-| --- | --- | --- | --- |
-| k3d (k3s in Docker) | `bash scripts/k3d-up.sh` | `bash scripts/k3d-down.sh` | 8080 |
-| Vagrant + VirtualBox (k3s) | `vagrant up` | `vagrant destroy -f` | 8080 |
-| Vagrant + Docker (k3s) | `bash scripts/vagrant-docker-up.sh` | `bash scripts/vagrant-docker-down.sh` | 8080 |
-
-The k3d lab needs `k3d` and host `kubectl`. The Vagrant k3s labs use
-`k3s kubectl` on the master instead. Prometheus' `k3s-nodes` static targets in
-`kubernetes/cluster-manifests.yaml` reference the VirtualBox IPs, so they only
-resolve in that lab; chat pod scraping and CPU-based HPA work everywhere.
-
-## Local development (without Kubernetes)
-
-Requires Node.js 20+, MariaDB, and NATS (chat starts without NATS, but cross-replica realtime/readiness needs it).
+Requiere Node.js 20+, MariaDB y NATS:
 
 ```bash
 docker run --rm --name cda-mariadb \
@@ -275,43 +138,34 @@ docker run --rm --name cda-nats -p 4222:4222 nats:2.10-alpine
 
 cd src/chat-server
 npm install
-npm run build          # React + Tailwind -> public/ (also done by docker build)
+npm run build
 PORT=3000 NATS_URL=nats://127.0.0.1:4222 npm start
-# Windows PowerShell: $env:PORT=3000; $env:NATS_URL="nats://127.0.0.1:4222"; npm start
 ```
 
-Open <http://localhost:3000>. Tables are created automatically on startup.
+Abre <http://localhost:3000>. Para hot reload: `npm run dev:ui` (Vite `:5173`)
+y `npm start`. `npm run check` valida tipos y sintaxis.
 
-The UI lives in `frontend/src/`: `useChat.ts` owns the WebSocket and server
-state (TanStack Query), `App.tsx` is the layout, and `ui.tsx` holds the small
-shadcn-style Button/Input/Avatar/Modal primitives. For hot reload run
-`npm run dev:ui` in one terminal (Vite on `:5173`) and `npm start` in another;
-`npm run check` type-checks the UI and syntax-checks the server. There is no
-table in the app, so TanStack Table is not needed.
+## API y realtime (resumen)
 
-## API and realtime (summary)
+- **Health:** `GET /api/livez`, `GET /api/health`, `GET /api/ready` (ready exige MariaDB + NATS)
+- **Salas:** `GET /api/rooms`, `POST /api/rooms` `{ "name":"random" }`
+- **Mensajes:** `GET /api/messages?room=general&limit=50&before=<id>`, `POST /api/messages` `{ "room","username","body" }`
+- **Perfiles:** `GET /api/profile?username=...`, `PUT /api/profile` `{ "username","avatar","color" }`
+- **WebSocket:** `ws://<host>/ws/`; el cliente envía `join`, `message`, `typing`, `ping`
+- **Métricas:** `:9091/metrics` en cada pod de chat (no expuesto por nginx)
 
-- **Health/readiness:** `GET /api/livez`, `GET /api/health`, `GET /api/ready` (ready requires MariaDB + NATS)
-- **Rooms:** `GET /api/rooms`, `POST /api/rooms` `{ "name":"random" }`
-- **Messages:** `GET /api/messages?room=general&limit=50&before=<id>`, `POST /api/messages` `{ "room","username","body" }`
-- **Profiles:** `GET /api/profile?username=...`, `PUT /api/profile` `{ "username","avatar","color" }`
-- **WebSocket:** connect to `ws://<host>/ws/` (or `wss/`). Client sends `join`, `message`, `typing`, `ping`; server emits `hello`, `joined`, `message`, `presence`, `profile`, `typing`, `pong`, `error`.
-- **Metrics:** Prometheus metrics at `:9091/metrics` on each chat pod/container (not exposed via nginx/service).
+## Configuración
 
-## Configuration
+Variables principales (`src/chat-server/lib/config.js`): `PORT`, `METRICS_PORT`,
+`NATS_URL`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`,
+`HISTORY_LIMIT` y `MAX_MESSAGE_LENGTH`. Las credenciales del laboratorio están
+en el Secret `chat-db-credentials` de `kubernetes/cluster-manifests.yaml`.
 
-Key environment variables (see `src/chat-server/lib/config.js`): `PORT` (8080), `METRICS_PORT` (9091), `NATS_URL`, `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD`, and limits like `HISTORY_LIMIT`, `MAX_MESSAGE_LENGTH`. Kubernetes demo credentials are in the `chat-db-credentials` Secret in `kubernetes/cluster-manifests.yaml`.
+## Notas
 
-Useful overrides for the kubeadm lab:
-
-```bash
-K8S_MINOR=1.35 bash scripts/kubeadm-up-docker.sh
-KUBEADM_NODE_IMAGE=my-node bash scripts/kubeadm-in-docker.sh
-```
-
-## Notes
-
-- **No authentication** (lab project). Nicknames are self-asserted.
-- DB schema is initialized by `mariadb-init` ConfigMap on first boot with an empty volume and also ensured by `src/chat-server/lib/db.js` (keep them in sync).
-- No setup does node/VM autoscaling; the HPA scales chat pods only.
-- Mounting `/var/run/docker.sock` into the controller gives it root-equivalent access to the host Docker daemon. Use it only on your own machine.
+- No hay autenticación: es un proyecto de laboratorio.
+- El esquema de MariaDB lo inicializa el ConfigMap `mariadb-init` y lo asegura
+  `src/chat-server/lib/db.js` en el arranque.
+- El HPA escala solo pods de chat; no hay autoscaling de nodos.
+- Queda un único control-plane (SPOF documentado). Los pods ya programados
+  siguen sirviendo si cae, pero Kubernetes no puede crear ni reemplazar pods.

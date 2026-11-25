@@ -6,45 +6,30 @@ set -uo pipefail
 # application contract: UI/API reachable through either worker + a message can
 # be POSTed and read back. All kubectl calls run on the control-plane.
 #
-# Usage (from host with Vagrant, or inside the controller container):
+# Usage (from the host with Vagrant + VirtualBox):
 #   bash scripts/kubeadm-chaos.sh
-#   KUBEADM_DOCKER=1 bash scripts/kubeadm-chaos.sh
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# KUBEADM_DOCKER=1 selects the Docker-provider lab (host or controller).
-if [[ "${KUBEADM_DOCKER:-0}" == "1" ]]; then
-  export VAGRANT_VAGRANTFILE="${ROOT_DIR}/Vagrantfile.kubeadm.docker"
-  export VAGRANT_DOTFILE_PATH="${VAGRANT_DOTFILE_PATH:-${ROOT_DIR}/.vagrant-kubeadm-docker}"
-  export KUBEADM_PREFIX="kubeadm-docker"
-fi
-export VAGRANT_VAGRANTFILE="${VAGRANT_VAGRANTFILE:-$ROOT_DIR/Vagrantfile.kubeadm}"
-export VAGRANT_DOTFILE_PATH="${VAGRANT_DOTFILE_PATH:-$ROOT_DIR/.vagrant-kubeadm}"
+export VAGRANT_VAGRANTFILE="$ROOT_DIR/Vagrantfile.kubeadm"
+export VAGRANT_DOTFILE_PATH="$ROOT_DIR/.vagrant-kubeadm"
 
-PREFIX="${KUBEADM_PREFIX:-kubeadm}"
-CP="${PREFIX}-controlplane"
-INFRA_WORKER="${PREFIX}-worker-infra"
-APP_WORKER="${PREFIX}-worker-app"
+CP="kubeadm-controlplane"
+INFRA_WORKER="kubeadm-worker-infra"
+APP_WORKER="kubeadm-worker-app"
 LOG_DIR="$ROOT_DIR/docs/evidence"
 mkdir -p "$LOG_DIR"
 exec > >(tee "$LOG_DIR/kubeadm-chaos.txt") 2>&1
 
-# Exported OVAs have no Vagrant synced folder; the build keeps a copy on disk.
-MANIFEST_DIR="${MANIFEST_DIR:-/vagrant}"
-if ! vagrant ssh "$CP" -c \
-  'test -f '"$MANIFEST_DIR"'/kubernetes/demo/load-generator.yaml' >/dev/null 2>&1 \
-  && vagrant ssh "$CP" -c \
-  'test -f /opt/cda-chat/kubernetes/demo/load-generator.yaml' >/dev/null 2>&1; then
-  MANIFEST_DIR=/opt/cda-chat
-fi
+# Manifests live on the VM disk at /opt/cda-chat (also after OVA import).
+MANIFEST_DIR="${MANIFEST_DIR:-/opt/cda-chat}"
 
 TOTAL=0
 FAILED=0
 
-# Host ports 18080/18081 exist on the PC. Inside the controller container the
-# Docker network DNS names are used instead; dead candidates are simply skipped.
-IFS=', ' read -r -a HEALTH_URLS <<< "${CHAOS_HEALTH_URLS:-http://localhost:18080/api/health,http://localhost:18081/api/health,http://kubeadm-docker-worker-infra:30080/api/health,http://kubeadm-docker-worker-app:30080/api/health}"
+# Every node exposes NodePort 30080; the host publishes 18080/18081/18082.
+IFS=', ' read -r -a HEALTH_URLS <<< "${CHAOS_HEALTH_URLS:-http://localhost:18080/api/health,http://localhost:18081/api/health,http://localhost:18082/api/health}"
 
 pass() { echo "  [OK]   $*"; }
 fail() { echo "  [FAIL] $*"; FAILED=$((FAILED + 1)); }
@@ -77,20 +62,12 @@ node_cmd() {
 
 stop_node() {
   local node="$1"
-  if [[ "${KUBEADM_DOCKER:-0}" == "1" ]]; then
-    docker stop "$node" >/dev/null 2>&1
-  else
-    vagrant stop "$node" >/dev/null 2>&1
-  fi
+  vagrant stop "$node" >/dev/null 2>&1
 }
 
 start_node() {
   local node="$1"
-  if [[ "${KUBEADM_DOCKER:-0}" == "1" ]]; then
-    docker start "$node" >/dev/null 2>&1
-  else
-    vagrant up "$node" >/dev/null 2>&1
-  fi
+  vagrant up "$node" >/dev/null 2>&1
 }
 
 cleanup() {

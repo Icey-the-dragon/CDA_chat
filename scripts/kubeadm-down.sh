@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Tear down only the parallel kubeadm lab. The k3d/k3s setups are untouched.
+# Tear down the kubeadm VirtualBox lab.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -20,4 +20,4 @@ vagrant destroy -f
 echo "==> Removing generated kubeadm credentials/join data..."
 rm -rf .kubeadm
 
-echo "kubeadm lab removed. The k3d/k3s setup was not changed."
+echo "kubeadm lab removed."

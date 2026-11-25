@@ -1,6 +1,7 @@
-# Single VM that contains the minimal demo-bundle (k3d, 1 server + 2 agents).
-# It is only used to BUILD the OVA. The teacher imports the OVA with
-# scripts/launch-ova.sh demo; Vagrant is not needed on that machine.
+# Single VM used to BUILD ova/demo.ova: Docker + k3d + the minimal bundle.
+# The teacher imports the OVA with scripts/launch-ova.sh demo; Vagrant is not
+# needed on that machine. No synced folder: `file` provisioner avoids rsync
+# permission errors.
 #
 #   bash scripts/demo-ova-up.sh
 #   bash scripts/export-ova.sh demo
@@ -18,8 +19,8 @@ Vagrant.configure("2") do |config|
     vb.cpus = 2
   end
 
-  config.vm.synced_folder ".", "/vagrant", type: "rsync",
-    rsync__exclude: [".git/", ".vagrant/", ".vagrant-demo/", "node_modules/"]
+  config.vm.provision "file", source: "demo-bundle",
+    destination: "/home/vagrant/demo-bundle"
 
   config.vm.provision "shell", inline: <<-SHELL
     set -e
@@ -42,7 +43,7 @@ Vagrant.configure("2") do |config|
 
     echo "==> [demo] Installing the bundle into /opt/demo-bundle..."
     mkdir -p /opt/demo-bundle/images
-    cp -a /vagrant/demo-bundle/. /opt/demo-bundle/
+    cp -a /home/vagrant/demo-bundle/. /opt/demo-bundle/
     cd /opt/demo-bundle
 
     # Preload every image so the imported OVA starts without a registry.
@@ -53,7 +54,7 @@ Vagrant.configure("2") do |config|
     K3S_IMAGE="rancher/k3s:v1.31.5-k3s1"
     docker pull "$K3S_IMAGE"
     docker save -o images/k3s.tar "$K3S_IMAGE"
-    printf '%s\n' "$K3S_IMAGE" > images/k3s-image.txt
+    printf '%s\\n' "$K3S_IMAGE" > images/k3s-image.txt
 
     cat > /etc/systemd/system/cda-demo.service <<'UNIT'
 [Unit]

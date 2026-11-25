@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Bring up the parallel kubeadm lab: 1 control-plane + 2 workers, as required
-# by the assignment. The workers consolidate the app services (infra: DB and
+# Bring up the kubeadm lab: 1 control-plane + 2 workers, as required by the
+# assignment. The workers consolidate the app services (infra: DB and
 # monitoring; app: nginx and chat), use kubeadm/containerd, swap disabled and
-# Flannel CNI. Uses its own Vagrant state directory so it does not conflict
-# with the existing Vagrantfile.
+# Flannel CNI. Uses its own Vagrant state directory.
 #
 # kubectl is NOT required on the host: every kubectl call is executed inside
 # the control-plane VM through `vagrant ssh`.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+
+# shellcheck source=scripts/virtualbox-preflight.sh
+source "$ROOT_DIR/scripts/virtualbox-preflight.sh"
+if ! vbox_preflight "$ROOT_DIR"; then
+  exit 1
+fi
 
 VAGRANTFILE="$ROOT_DIR/Vagrantfile.kubeadm"
 export VAGRANT_VAGRANTFILE="$VAGRANTFILE"
@@ -58,8 +63,7 @@ vagrant up "$CP"
 
 # Vagrant's NAT adapter is eth0 on every VM (10.0.2.15), so Flannel must use
 # the host-only adapter enp0s8 instead. Otherwise all nodes advertise the same
-# backend IP and pod networking breaks. This mirrors Vagrantfile's
-# `--flannel-iface enp0s8` used by the k3s lab.
+# backend IP and pod networking breaks, so patch Flannel to use enp0s8.
 FLANNEL_NS=kube-flannel
 kube get ns "$FLANNEL_NS" >/dev/null 2>&1 || FLANNEL_NS=kube-system
 kube patch configmap kube-flannel-cfg -n "$FLANNEL_NS" --type=merge \
@@ -102,13 +106,13 @@ kube rollout status deployment/metrics-server -n kube-system --timeout=180s
 
 echo "==> Applying application manifests..."
 # Plain kubeadm has no dynamic provisioner; these hostPath PVs back the PVCs.
-kube apply -f /vagrant/kubernetes/kubeadm/storage.yaml
-kube apply -f /vagrant/kubernetes/cluster-manifests.yaml -f /vagrant/kubernetes/nginx-configmap.yaml
+kube apply -f /opt/cda-chat/kubernetes/kubeadm/storage.yaml
+kube apply -f /opt/cda-chat/kubernetes/cluster-manifests.yaml -f /opt/cda-chat/kubernetes/nginx-configmap.yaml
 
 # Replace the single-instance base MariaDB/NATS with kubeadm HA variants.
 kube delete deployment/mariadb deployment/nats --ignore-not-found=true >/dev/null 2>&1 || true
-kube apply -f /vagrant/kubernetes/kubeadm/nats.yaml \
-           -f /vagrant/kubernetes/kubeadm/mariadb-ha.yaml
+kube apply -f /opt/cda-chat/kubernetes/kubeadm/nats.yaml \
+           -f /opt/cda-chat/kubernetes/kubeadm/mariadb-ha.yaml
 kube patch service mariadb-service \
   -p '{"spec":{"selector":{"app":"mariadb-primary"}}}'
 
@@ -144,11 +148,11 @@ kube scale deployment/nginx-router --replicas=2 >/dev/null
 # The shared Prometheus ConfigMap keeps the k3s targets untouched. This lab
 # applies its own 3-node version from kubeadm/prometheus-config.yaml. Restart
 # the pod so Prometheus picks up the mounted ConfigMap immediately.
-kube apply -f /vagrant/kubernetes/kubeadm/prometheus-config.yaml
+kube apply -f /opt/cda-chat/kubernetes/kubeadm/prometheus-config.yaml
 kube delete pod -l app=prometheus --wait=false --ignore-not-found >/dev/null 2>&1 || true
 
-# The base Grafana root_url assumes host port 8080 (used by k3d). This lab
-# publishes 18080/18081 on the two workers.
+# The base Grafana root_url assumes host port 8080. This lab publishes
+# 18080/18081 on the two workers.
 kube set env deployment/grafana GF_SERVER_ROOT_URL="http://localhost:18080/grafana/"
 
 echo "==> Waiting for core workloads..."

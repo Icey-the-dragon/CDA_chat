@@ -10,18 +10,10 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# KUBEADM_DOCKER=1 selects the Docker-provider lab without needing a thin
-# wrapper script (see kubeadm-verify.sh for the same pattern).
-if [[ "${KUBEADM_DOCKER:-0}" == "1" ]]; then
-  export VAGRANT_VAGRANTFILE="${ROOT_DIR}/Vagrantfile.kubeadm.docker"
-  export VAGRANT_DOTFILE_PATH="${VAGRANT_DOTFILE_PATH:-${ROOT_DIR}/.vagrant-kubeadm-docker}"
-  export KUBEADM_PREFIX="kubeadm-docker"
-fi
+export VAGRANT_VAGRANTFILE="$ROOT_DIR/Vagrantfile.kubeadm"
+export VAGRANT_DOTFILE_PATH="$ROOT_DIR/.vagrant-kubeadm"
 
-export VAGRANT_VAGRANTFILE="${VAGRANT_VAGRANTFILE:-$ROOT_DIR/Vagrantfile.kubeadm}"
-export VAGRANT_DOTFILE_PATH="${VAGRANT_DOTFILE_PATH:-$ROOT_DIR/.vagrant-kubeadm}"
-
-CP="${KUBEADM_PREFIX:-kubeadm}-controlplane"
+CP="kubeadm-controlplane"
 LOG_DIR="$ROOT_DIR/docs/evidence"
 mkdir -p "$LOG_DIR"
 exec > >(tee "$LOG_DIR/kubeadm-controlplane-failure.txt") 2>&1
@@ -55,10 +47,8 @@ fi
 
 echo
 echo "==> Workloads keep running without the control plane"
-# Both workers expose the NodePort to the host (18080/18081). Inside the
-# controller container those host ports do not exist, so container DNS URLs are
-# included as fallbacks.
-HEALTH_URLS="${HEALTH_URLS:-${HEALTH_URL:-http://localhost:18080/api/health,http://localhost:18081/api/health}}"
+# All three nodes expose NodePort 30080; the host publishes 18080/18081/18082.
+HEALTH_URLS="${HEALTH_URLS:-${HEALTH_URL:-http://localhost:18080/api/health,http://localhost:18081/api/health,http://localhost:18082/api/health}}"
 IFS=', ' read -r -a health_urls <<< "$HEALTH_URLS"
 serving_url=""
 for url in "${health_urls[@]}"; do

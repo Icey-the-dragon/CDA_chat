@@ -122,7 +122,7 @@ bash scripts/kubeadm-ova-kubectl.sh get pods -o wide
    bash scripts/kubeadm-ova-kubectl.sh apply -f /opt/cda-chat/kubernetes/demo/load-generator.yaml
    bash scripts/kubeadm-ova-kubectl.sh get hpa chat-server -w
    ```
-   De vuelta a 2 con `--replicas=2`. El HPA del laboratorio va de 2 a 4 al 50 %
+   De vuelta a 2 con `--replicas=2`. El HPA del laboratorio va de 2 a 4 al 60 %
    de CPU.
 3. **Fallo de un pod:**
    ```bash

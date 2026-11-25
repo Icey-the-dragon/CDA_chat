@@ -5,6 +5,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=scripts/virtualbox-preflight.sh
+source "$ROOT_DIR/scripts/virtualbox-preflight.sh"
+if ! vbox_preflight "$ROOT_DIR"; then
+  exit 1
+fi
+
 export VAGRANT_VAGRANTFILE="$ROOT_DIR/Vagrantfile.demo"
 export VAGRANT_DOTFILE_PATH="$ROOT_DIR/.vagrant-demo"
 
