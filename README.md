@@ -66,6 +66,11 @@ Requisitos en el PC que construye: Docker, Vagrant, VirtualBox y la box
 > El apagado debe ser limpio (`sudo poweroff`). Un apagado forzado deja el
 > sistema de archivos en un estado que puede bloquear el arranque tras
 > importar el OVA con una MAC nueva.
+>
+> En Windows con WSL2/Docker Desktop activo, VirtualBox puede caer en el modo
+> Hyper-V y volverse extremadamente lento. El Vagrantfile ya fuerza
+> `--paravirtprovider legacy` para evitarlo; si aun así la VM no arranca,
+> ejecuta `wsl --shutdown` antes de `vagrant up`.
 
 ## Archivos
 
