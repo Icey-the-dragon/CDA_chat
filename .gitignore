@@ -2,8 +2,12 @@ kubeconfig.yaml
 .vagrant
 .vagrant-kubeadm/
 .vagrant-demo/
+.vagrant-base/
 .kubeadm/
 ova/
+base/
+*.vdi
+*.vdi.zip
 *.ova
 *.mf
 node_modules/

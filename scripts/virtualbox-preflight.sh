@@ -27,6 +27,18 @@ vbox_preflight() {
 
   echo "==> KVM modules are loaded and block VirtualBox: $(echo "$modules" | tr '\n' ' ')"
 
+  # Set VBOX_KVM_UNLOAD=0 if you do not want this script to touch kvm_intel /
+  # kvm_amd / kvm. VirtualBox itself still needs them unloaded to start a VM.
+  if [ "${VBOX_KVM_UNLOAD:-1}" = 0 ]; then
+    cat >&2 <<EOF
+WARNING: VBOX_KVM_UNLOAD=0, leaving the modules loaded. VirtualBox will fail
+with "VT-x is not available" until you run:
+
+  sudo modprobe -r kvm_intel kvm_amd kvm
+EOF
+    return 0
+  fi
+
   if ! sudo -n true 2>/dev/null; then
     cat >&2 <<EOF
 ERROR: unload them before running Vagrant:
