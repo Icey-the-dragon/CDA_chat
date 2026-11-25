@@ -1,5 +1,5 @@
 kubeconfig.yaml
-.vagrant
+.vagrant/**
 .vagrant-kubeadm/
 .vagrant-demo/
 .vagrant-base/
@@ -16,3 +16,4 @@ node_modules/
 chat-server.tar
 cda-demo-bundle.zip
 src/chat-server/public/
+.vagrant-kubeadm-docker/machines/kubeadm-docker-controlplane/docker/action_provision
