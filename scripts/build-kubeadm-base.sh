@@ -36,8 +36,30 @@ export VAGRANT_VAGRANTFILE="$ROOT_DIR/Vagrantfile.base"
 export VAGRANT_DOTFILE_PATH="$ROOT_DIR/.vagrant-base"
 export K8S_MINOR="${K8S_MINOR:-1.36}"
 
+# If a previous run failed during provisioning, Vagrant would otherwise just
+# boot that half-configured VM and skip the shell provisioner. Always start
+# from a clean template.
+echo "==> Removing any previous builder VM..."
+vagrant destroy -f "$VM" >/dev/null 2>&1 || true
+
 echo "==> Creating and provisioning the template VM..."
 vagrant up "$VM"
+
+# The teacher VM script talks to the guests only through VBoxManage
+# guestcontrol. Fail here, not on the teacher's PC, if Guest Additions are
+# missing inside the template.
+echo "==> Verifying Guest Additions (guestcontrol)..."
+if ! VBoxManage guestcontrol "$VM" run --exe /bin/bash \
+      --username "${OVA_GUEST_USER:-vagrant}" \
+      --password "${OVA_GUEST_PASSWORD:-vagrant}" \
+      --wait-stdout --wait-stderr \
+      -- -c 'echo guestcontrol-ok' | grep -q guestcontrol-ok; then
+  echo "ERROR: guestcontrol failed inside '$VM'. The exported VDI must contain" >&2
+  echo "       VirtualBox Guest Additions; check the Vagrant box/VirtualBox ISO." >&2
+  vagrant destroy -f "$VM" >/dev/null 2>&1 || true
+  exit 1
+fi
+
 vagrant halt "$VM"
 
 echo "==> Exporting the template disk..."

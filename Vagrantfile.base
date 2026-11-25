@@ -43,14 +43,21 @@ EOF
     sysctl --system
 
     echo "==> [base] installing containerd, kubeadm, kubelet, kubectl..."
+    # Guest Additions are NOT installed from apt here: virtualbox-guest-utils
+    # lives in Debian 'contrib' and is not present in every box/mirror. The
+    # debian/bookworm64 Vagrant box already ships them, and Vagrant installs or
+    # refreshes them automatically from VirtualBox's own ISO before this
+    # provisioner runs. That is what VBoxManage guestcontrol needs later.
     apt-get update
     apt-get install -y ca-certificates curl gnupg kmod \
-      apt-transport-https containerd virtualbox-guest-utils
+      apt-transport-https containerd
     mkdir -p /etc/containerd
     containerd config default > /etc/containerd/config.toml
     sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
     systemctl enable --now containerd
-    systemctl enable --now vboxservice
+    if systemctl list-unit-files vboxservice.service >/dev/null 2>&1; then
+      systemctl enable --now vboxservice || true
+    fi
 
     K8S_MINOR="#{ENV.fetch('K8S_MINOR', '1.36')}"
     mkdir -p /etc/apt/keyrings

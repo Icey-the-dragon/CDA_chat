@@ -95,6 +95,11 @@ Generar la base **una sola vez** en una máquina con Vagrant + VirtualBox + Dock
 bash scripts/build-kubeadm-base.sh      # -> base/cda-kubeadm-base.vdi(.zip) + SHA256SUMS
 ```
 
+No se instala `virtualbox-guest-utils` con `apt`: ese paquete está en `contrib`
+y no está en todas las imágenes/espejos. La caja `debian/bookworm64` ya trae
+Guest Additions (Vagrant las instala/actualiza desde el ISO de VirtualBox), y el
+script comprueba `guestcontrol` antes de exportar el disco.
+
 Copiar `base/`, `scripts/`, `kubernetes/` y `src/` al PC del profesor y ejecutar:
 
 ```bash
