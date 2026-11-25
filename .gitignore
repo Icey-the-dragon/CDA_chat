@@ -15,5 +15,8 @@ node_modules/
 *.log
 chat-server.tar
 cda-demo-bundle.zip
+build/images/
+build/.vagrant/
+.vagrant-kubeadm-docker/
 src/chat-server/public/
 .vagrant-kubeadm-docker/machines/kubeadm-docker-controlplane/docker/action_provision

@@ -1,0 +1,25 @@
+# Build-only VM. The teacher never needs Vagrant: the result is exported as
+# delivery/cda-kubeadm.ova and started with delivery/start.bat.
+Vagrant.configure("2") do |config|
+  config.vm.box = "ubuntu/jammy64"
+  config.vm.hostname = "cda-kubeadm"
+  config.ssh.insert_key = false
+  config.vm.boot_timeout = 600
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "CDA-Kubeadm-VM"
+    vb.memory = 4096
+    vb.cpus = 2
+    vb.gui = false
+  end
+
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+  config.vm.provision "file", source: "setup.sh", destination: "/home/vagrant/setup.sh"
+  config.vm.provision "file", source: "images/kubeadm-node.tar", destination: "/home/vagrant/kubeadm-node.tar"
+  config.vm.provision "file", source: "images/cda-demo.tar", destination: "/home/vagrant/cda-demo.tar"
+  config.vm.provision "file", source: "manifests", destination: "/home/vagrant/manifests"
+  config.vm.provision "file", source: "bench.mjs", destination: "/home/vagrant/bench.mjs"
+  config.vm.provision "file", source: "bench-run.sh", destination: "/home/vagrant/bench-run.sh"
+  config.vm.provision "file", source: "load.yaml", destination: "/home/vagrant/load.yaml"
+  config.vm.provision "shell", inline: "bash /home/vagrant/setup.sh"
+end
