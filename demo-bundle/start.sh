@@ -15,8 +15,14 @@ for cmd in docker k3d kubectl; do
 done
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "==> Cargando imagen $IMAGE desde images/cda-demo.tar"
-  docker load -i images/cda-demo.tar
+  if [ -f images/cda-demo.tar ]; then
+    echo "==> Cargando imagen $IMAGE desde images/cda-demo.tar"
+    docker load -i images/cda-demo.tar
+  else
+    echo "==> Construyendo imagen $IMAGE desde app/ (no hay images/cda-demo.tar)"
+    mkdir -p images
+    docker build -t "$IMAGE" app
+  fi
 fi
 
 # Optional: the bundle may include the exact k3s image used to build it.

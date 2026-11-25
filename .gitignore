@@ -2,7 +2,11 @@ kubeconfig.yaml
 .vagrant
 .vagrant-kubeadm/
 .vagrant-kubeadm-docker/
+.vagrant-demo/
 .kubeadm/
+ova/
+*.ova
+*.mf
 node_modules/
 .env
 *.log

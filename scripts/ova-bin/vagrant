@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Minimal `vagrant` shim for OVA-imported kubeadm nodes. The shared lab scripts
+# call `vagrant ssh`, `vagrant status`, `vagrant stop` and `vagrant up`; on the
+# teacher machine Vagrant is not installed, but VirtualBox guestcontrol can run
+# the same commands inside the imported VMs.
+#
+# Only used by scripts/kubeadm-*-ova.sh. Do not put this directory first in
+# PATH for normal Vagrant labs.
+
+VBOX="${VBOX_MANAGE:-VBoxManage}"
+GUEST_USER="${OVA_GUEST_USER:-vagrant}"
+GUEST_PASSWORD="${OVA_GUEST_PASSWORD:-vagrant}"
+VBOX_TYPE="${VBOX_TYPE:-headless}"
+
+die() {
+  echo "ova-vagrant: $*" >&2
+  exit 1
+}
+
+vm_exists() {
+  "$VBOX" list vms | grep -q "\"$1\""
+}
+
+vm_state() {
+  "$VBOX" showvminfo "$1" --machinereadable 2>/dev/null \
+    | sed -n 's/^VMState="\([^"]*\)"$/\1/p'
+}
+
+cmd_ssh() {
+  local name="${1:-}" cmd=""
+  [ "$#" -gt 0 ] && shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -c) cmd="${2-}"; shift 2 || shift $# ;;
+      *) shift ;;
+    esac
+  done
+  [ -n "$name" ] || die "ssh needs a VM name"
+  [ -n "$cmd" ] || die "ssh needs -c COMMAND"
+  vm_exists "$name" || die "VM '$name' is not registered"
+
+  "$VBOX" guestcontrol "$name" run \
+    --exe /bin/bash \
+    --username "$GUEST_USER" --password "$GUEST_PASSWORD" \
+    --wait-stdout --wait-stderr \
+    -- -c "$cmd"
+}
+
+case "${1:-}" in
+  ssh)
+    shift
+    cmd_ssh "$@"
+    ;;
+  status)
+    shift
+    name="${1:-}"
+    vm_exists "$name" || die "VM '$name' is not registered"
+    printf '%s\n' "$name"
+    ;;
+  stop)
+    shift
+    name="${1:-}"
+    vm_exists "$name" || die "VM '$name' is not registered"
+    "$VBOX" controlvm "$name" poweroff >/dev/null 2>&1 || \
+      "$VBOX" controlvm "$name" acpipowerbutton >/dev/null 2>&1 || true
+    ;;
+  up)
+    shift
+    name="${1:-}"
+    vm_exists "$name" || die "VM '$name' is not registered"
+    [ "$(vm_state "$name")" = running ] || \
+      "$VBOX" startvm "$name" --type "$VBOX_TYPE" >/dev/null
+    ;;
+  *)
+    die "unsupported command: ${1:-<none>}"
+    ;;
+esac

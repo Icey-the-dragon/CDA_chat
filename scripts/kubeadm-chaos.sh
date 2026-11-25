@@ -30,6 +30,15 @@ LOG_DIR="$ROOT_DIR/docs/evidence"
 mkdir -p "$LOG_DIR"
 exec > >(tee "$LOG_DIR/kubeadm-chaos.txt") 2>&1
 
+# Exported OVAs have no Vagrant synced folder; the build keeps a copy on disk.
+MANIFEST_DIR="${MANIFEST_DIR:-/vagrant}"
+if ! vagrant ssh "$CP" -c \
+  'test -f '"$MANIFEST_DIR"'/kubernetes/demo/load-generator.yaml' >/dev/null 2>&1 \
+  && vagrant ssh "$CP" -c \
+  'test -f /opt/cda-chat/kubernetes/demo/load-generator.yaml' >/dev/null 2>&1; then
+  MANIFEST_DIR=/opt/cda-chat
+fi
+
 TOTAL=0
 FAILED=0
 
@@ -369,7 +378,7 @@ fi
 
 # ------------------------------------------------- load + pod failure combo
 scenario "10. Sustained load while a chat pod is deleted"
-kube apply -f /vagrant/kubernetes/demo/load-generator.yaml >/dev/null 2>&1 \
+kube apply -f "$MANIFEST_DIR/kubernetes/demo/load-generator.yaml" >/dev/null 2>&1 \
   || record 1 "could not start the load generator"
 sleep 20
 pod="$(kube get pods -l app=chat-server --no-headers 2>/dev/null | awk 'NR==1 {print $1}')"

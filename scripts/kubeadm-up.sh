@@ -56,6 +56,18 @@ docker save -o images/chat-server.tar chat-server:latest
 echo "==> Starting control plane (swap off + containerd + kubeadm init + Flannel)..."
 vagrant up "$CP"
 
+# Vagrant's NAT adapter is eth0 on every VM (10.0.2.15), so Flannel must use
+# the host-only adapter enp0s8 instead. Otherwise all nodes advertise the same
+# backend IP and pod networking breaks. This mirrors Vagrantfile's
+# `--flannel-iface enp0s8` used by the k3s lab.
+FLANNEL_NS=kube-flannel
+kube get ns "$FLANNEL_NS" >/dev/null 2>&1 || FLANNEL_NS=kube-system
+kube patch configmap kube-flannel-cfg -n "$FLANNEL_NS" --type=merge \
+  -p '{"data":{"net-conf.json":"{\"Network\":\"10.244.0.0/16\",\"EnableIPv6\":false,\"Backend\":{\"Type\":\"vxlan\"},\"Interface\":\"enp0s8\"}"}}' \
+  >/dev/null
+kube rollout restart daemonset/kube-flannel-ds -n "$FLANNEL_NS" >/dev/null
+echo "==> Flannel is using enp0s8 (host-only network)..."
+
 echo "==> Fetching a fresh join command from the control plane..."
 vagrant ssh "$CP" -c "sudo kubeadm token create --print-join-command" | tr -d '\r' > .kubeadm/join.sh
 chmod +x .kubeadm/join.sh

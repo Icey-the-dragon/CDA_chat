@@ -32,6 +32,16 @@ LOG_DIR="$ROOT_DIR/docs/evidence"
 mkdir -p "$LOG_DIR"
 exec > >(tee "$LOG_DIR/kubeadm-verify.txt") 2>&1
 
+# Inside an exported OVA there is no Vagrant synced folder. The build copies
+# the manifests to /opt/cda-chat so the same commands still work.
+MANIFEST_DIR="${MANIFEST_DIR:-/vagrant}"
+if ! vagrant ssh "$CP" -c \
+  'test -f '"$MANIFEST_DIR"'/kubernetes/demo/load-generator.yaml' >/dev/null 2>&1 \
+  && vagrant ssh "$CP" -c \
+  'test -f /opt/cda-chat/kubernetes/demo/load-generator.yaml' >/dev/null 2>&1; then
+  MANIFEST_DIR=/opt/cda-chat
+fi
+
 # Try every published worker port, plus the Docker network DNS names when the
 # script runs inside the controller container.
 HEALTH_URLS="${HEALTH_URLS:-http://localhost:18080/api/health,http://localhost:18081/api/health,http://kubeadm-docker-worker-infra:30080/api/health,http://kubeadm-docker-worker-app:30080/api/health}"
@@ -181,7 +191,7 @@ if kube get apiservice v1beta1.metrics.k8s.io 2>/dev/null | grep -q ' True '; th
 else
   fail "metrics API is not available (check metrics-server on the control plane)"
 fi
-kube apply -f /vagrant/kubernetes/demo/load-generator.yaml
+kube apply -f "$MANIFEST_DIR/kubernetes/demo/load-generator.yaml"
 baseline="$(kube get hpa chat-server -o jsonpath='{.status.desiredReplicas}' 2>/dev/null || echo 2)"
 desired="$baseline"
 for _ in $(seq 1 40); do

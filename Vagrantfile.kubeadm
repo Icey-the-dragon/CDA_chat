@@ -40,6 +40,12 @@ Vagrant.configure("2") do |config|
     set -e
     export DEBIAN_FRONTEND=noninteractive
 
+    # Keep a copy on the VM disk: /vagrant is a synced folder and disappears
+    # when the OVA is imported without Vagrant on the teacher machine.
+    mkdir -p /opt/cda-chat
+    cp -a /vagrant/kubernetes /opt/cda-chat/ 2>/dev/null || true
+    cp -a /vagrant/scripts /opt/cda-chat/ 2>/dev/null || true
+
     echo "==> [kubeadm] Disabling swap (required by kubelet)..."
     swapoff -a
     sed -i '/\\bswap\\b/s/^/#/' /etc/fstab || true

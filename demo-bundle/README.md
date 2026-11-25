@@ -112,15 +112,19 @@ watch kubectl get hpa -w          # vuelve a 2 tras la ventana de estabilizació
 kubectl get pods -l app=demo -w
 ```
 
-En otra terminal:
+En otra terminal, borra **un solo pod** por su nombre:
 
 ```bash
-kubectl delete pod -l app=demo
+POD="$(kubectl get pods -l app=demo --field-selector=status.phase=Running \
+  -o jsonpath='{.items[0].metadata.name}')"
+echo "Borrando $POD"
+kubectl delete pod "$POD"
 ```
 
-Verás los pods morir y aparecer otros nuevos automáticamente: el ReplicaSet
+Verás ese pod morir y aparecer uno nuevo automáticamente: el ReplicaSet
 mantiene siempre las réplicas configuradas. Si habías escalado a 4, se
-recrearán 4.
+recrearán 4. (`kubectl delete pod -l app=demo` borraría los cuatro a la vez;
+sirve para ver la recuperación completa, pero no es "un pod".)
 
 ## 4) Fallo del nodo master
 
@@ -151,8 +155,9 @@ pods no se caen; lo que desaparece es la capacidad de gestionarlos.
 
 - `start.sh` modifica el contexto actual de kubectl a `k3d-cda-demo`;
   `bash teardown.sh` borra el cluster.
-- El ZIP incluye `cda-demo:latest` y la imagen de k3s fijada, así que no se
-  compila nada. k3d solo puede descargar sus dos imágenes auxiliares pequeñas
-  (`k3d-tools`, `k3d-proxy`) si no están en caché.
+- Si el ZIP incluye `images/cda-demo.tar` y `images/k3s.tar`, no se compila
+  nada. Si no están, `start.sh` construye `cda-demo:latest` desde `app/` y k3d
+  descarga la imagen de k3s fijada; en ese caso hace falta acceso a un
+  registry. La OVA de `scripts/launch-ova.sh demo` ya trae todo precargado.
 - Si `bench.sh` pierde el port-forward tras borrar pods, vuelve a ejecutarlo:
   lo recrea automáticamente.

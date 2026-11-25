@@ -11,6 +11,10 @@ topología pedida en la práctica: **un nodo máster y dos nodos esclavos**.
 | Actual (Vagrant) | k3s en VMs | 1 master + 4 workers | 8080 | `.vagrant/` |
 | **Nuevo (este doc)** | **kubeadm sobre Debian bookworm** | **1 control-plane + 2 workers** | **18080** | `.vagrant-kubeadm/` |
 
+Para entregarlo como VM lista para arrancar con un único script (sin Vagrant
+ni Docker en el ordenador del profesor), consulta
+[`docs/OVA_DELIVERY.md`](OVA_DELIVERY.md).
+
 ---
 
 ## 1. Contextualización
