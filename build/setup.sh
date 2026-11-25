@@ -36,7 +36,9 @@ chmod 600 /etc/netplan/01-cda.yaml
 rm -f /etc/netplan/50-cloud-init.yaml
 printf 'network: {config: disabled}\n' > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
 systemctl mask systemd-networkd-wait-online.service >/dev/null 2>&1 || true
-netplan apply
+# Do not apply here: that would drop the Vagrant SSH session. The config is
+# generated now and takes effect on the next boot (after the OVA is imported).
+netplan generate || true
 
 echo "==> Docker"
 apt-get update -qq
